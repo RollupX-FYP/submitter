@@ -1,0 +1,18 @@
+network:
+  rpc_url: "http://127.0.0.1:8545"
+  chain_id: 31337
+
+contracts:
+  bridge: "0xPUT_BRIDGE_ADDRESS_HERE"
+
+da:
+  mode: "calldata" # "calldata" | "blob"
+  blob_binding: "mock" # "mock" | "opcode"
+  blob_index: 0
+
+batch:
+  data_file: "../data-tools/sample-batch.txt"
+  new_root: "0x1111111111111111111111111111111111111111111111111111111111111111"
+
+  # Only used when da.mode="blob"
+  blob_versioned_hash: "0x2222222222222222222222222222222222222222222222222222222222222222"

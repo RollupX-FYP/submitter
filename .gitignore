@@ -1,0 +1,36 @@
+# -----------------------------
+# Rust / Cargo
+# -----------------------------
+/target/
+**/*.rs.bk
+Cargo.lock
+
+# If you want to COMMIT Cargo.lock (recommended for binaries/apps),
+# remove the "Cargo.lock" line above.
+
+# -----------------------------
+# Env / Secrets
+# -----------------------------
+.env
+.env.*
+!.env.example
+
+# -----------------------------
+# Logs / Runtime outputs
+# -----------------------------
+*.log
+*.tmp
+*.out
+
+# Local runtime files (if you create any)
+addresses.json
+config.local.yaml
+
+# -----------------------------
+# OS / Editor
+# -----------------------------
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.swp
