@@ -41,11 +41,11 @@ jobs:
   slither:
     name: Slither (Solidity static analysis)
     runs-on: ubuntu-latest
-    if: hashFiles('**/*.sol') != ''
     steps:
       - uses: actions/checkout@v4
 
       - name: Run Slither
+        if: hashFiles('**/*.sol') != ''
         uses: crytic/slither-action@v0.4.1
         with:
           fail-on: medium
