@@ -12,19 +12,13 @@ jobs:
   detect:
     runs-on: ubuntu-latest
     outputs:
-      contracts_dir: ${{ steps.set.outputs.contracts_dir }}
       submitter_dir: ${{ steps.set.outputs.submitter_dir }}
-      has_contracts: ${{ steps.set.outputs.has_contracts }}
       has_submitter: ${{ steps.set.outputs.has_submitter }}
     steps:
       - uses: actions/checkout@v4
       - id: set
         shell: bash
         run: |
-          if [ -f "contracts/package.json" ]; then echo "contracts_dir=contracts" >> $GITHUB_OUTPUT; echo "has_contracts=true" >> $GITHUB_OUTPUT;
-          elif [ -f "package.json" ]; then echo "contracts_dir=." >> $GITHUB_OUTPUT; echo "has_contracts=true" >> $GITHUB_OUTPUT;
-          else echo "contracts_dir=" >> $GITHUB_OUTPUT; echo "has_contracts=false" >> $GITHUB_OUTPUT; fi
-
           if [ -f "submitter/Cargo.toml" ]; then echo "submitter_dir=submitter" >> $GITHUB_OUTPUT; echo "has_submitter=true" >> $GITHUB_OUTPUT;
           elif [ -f "Cargo.toml" ]; then echo "submitter_dir=." >> $GITHUB_OUTPUT; echo "has_submitter=true" >> $GITHUB_OUTPUT;
           else echo "submitter_dir=" >> $GITHUB_OUTPUT; echo "has_submitter=false" >> $GITHUB_OUTPUT; fi
@@ -56,7 +50,7 @@ jobs:
 
   codecov:
     name: Upload to Codecov (free for public repos)
-    needs: [rust_cov, contracts_cov]
+    needs: [rust_cov]
     runs-on: ubuntu-latest
     permissions:
       contents: read
