@@ -5,7 +5,7 @@ WORKDIR /usr/src/app
 COPY . .
 
 # Build the application
-RUN cargo install --path .
+RUN cargo install --locked --path .
 
 # Runtime stage
 FROM debian:bookworm-slim
