@@ -5,7 +5,6 @@ use crate::domain::{
 };
 use async_trait::async_trait;
 use sqlx::{postgres::PgPoolOptions, Pool, Postgres, Row};
-use std::str::FromStr;
 use tracing::info;
 use uuid::Uuid;
 
@@ -22,10 +21,10 @@ impl PostgresStorage {
             .map_err(|e| DomainError::Storage(e.to_string()))?;
 
         info!("Connected to Postgres");
-        
+
         let storage = Self { pool };
         storage.migrate().await?;
-        
+
         Ok(storage)
     }
 
@@ -49,12 +48,13 @@ impl PostgresStorage {
         .execute(&self.pool)
         .await
         .map_err(|e| DomainError::Storage(format!("Migration failed: {}", e)))?;
-        
+
         // Simple migration for existing tables if needed
-        let _ = sqlx::query("ALTER TABLE batches ADD COLUMN IF NOT EXISTS attempts INTEGER DEFAULT 0")
-            .execute(&self.pool)
-            .await;
-        
+        let _ =
+            sqlx::query("ALTER TABLE batches ADD COLUMN IF NOT EXISTS attempts INTEGER DEFAULT 0")
+                .execute(&self.pool)
+                .await;
+
         Ok(())
     }
 }
@@ -64,7 +64,7 @@ impl Storage for PostgresStorage {
     async fn save_batch(&self, batch: &Batch) -> Result<(), DomainError> {
         let id_str = batch.id.to_string();
         let status_str = batch.status.to_string();
-        
+
         sqlx::query(
             r#"
             INSERT INTO batches (id, data_file, new_root, status, da_mode, proof, tx_hash, attempts, created_at, updated_at)
@@ -102,9 +102,13 @@ impl Storage for PostgresStorage {
             .map_err(|e| DomainError::Storage(e.to_string()))?;
 
         if let Some(row) = row {
-            let id_str: String = row.try_get("id").map_err(|e| DomainError::Storage(e.to_string()))?;
-            let status_str: String = row.try_get("status").map_err(|e| DomainError::Storage(e.to_string()))?;
-            
+            let id_str: String = row
+                .try_get("id")
+                .map_err(|e| DomainError::Storage(e.to_string()))?;
+            let status_str: String = row
+                .try_get("status")
+                .map_err(|e| DomainError::Storage(e.to_string()))?;
+
             let status = match status_str.as_str() {
                 "Discovered" => BatchStatus::Discovered,
                 "Proving" => BatchStatus::Proving,
@@ -113,7 +117,12 @@ impl Storage for PostgresStorage {
                 "Submitted" => BatchStatus::Submitted,
                 "Confirmed" => BatchStatus::Confirmed,
                 "Failed" => BatchStatus::Failed,
-                _ => return Err(DomainError::Storage(format!("Unknown status: {}", status_str))),
+                _ => {
+                    return Err(DomainError::Storage(format!(
+                        "Unknown status: {}",
+                        status_str
+                    )))
+                }
             };
 
             let uuid = Uuid::parse_str(&id_str).map_err(|e| DomainError::Storage(e.to_string()))?;
@@ -127,38 +136,43 @@ impl Storage for PostgresStorage {
                 proof: row.try_get("proof").ok(),
                 tx_hash: row.try_get("tx_hash").ok(),
                 attempts: row.try_get::<i32, _>("attempts").unwrap_or(0) as u32,
-                created_at: row.try_get("created_at").map_err(|e| DomainError::Storage(e.to_string()))?,
-                updated_at: row.try_get("updated_at").map_err(|e| DomainError::Storage(e.to_string()))?,
+                created_at: row
+                    .try_get("created_at")
+                    .map_err(|e| DomainError::Storage(e.to_string()))?,
+                updated_at: row
+                    .try_get("updated_at")
+                    .map_err(|e| DomainError::Storage(e.to_string()))?,
             }))
         } else {
             Ok(None)
         }
     }
-    
+
     async fn get_pending_batches(&self) -> Result<Vec<Batch>, DomainError> {
-         let rows = sqlx::query("SELECT * FROM batches WHERE status != 'Confirmed' AND status != 'Failed'")
-            .fetch_all(&self.pool)
-            .await
-            .map_err(|e| DomainError::Storage(e.to_string()))?;
-            
+        let rows =
+            sqlx::query("SELECT * FROM batches WHERE status != 'Confirmed' AND status != 'Failed'")
+                .fetch_all(&self.pool)
+                .await
+                .map_err(|e| DomainError::Storage(e.to_string()))?;
+
         let mut batches = Vec::new();
         for row in rows {
             let id_str: String = row.try_get("id").unwrap();
-             let status_str: String = row.try_get("status").unwrap();
-             let status = match status_str.as_str() {
+            let status_str: String = row.try_get("status").unwrap();
+            let status = match status_str.as_str() {
                 "Discovered" => BatchStatus::Discovered,
                 "Proving" => BatchStatus::Proving,
                 "Proved" => BatchStatus::Proved,
                 "Submitting" => BatchStatus::Submitting,
                 "Submitted" => BatchStatus::Submitted,
                 "Confirmed" => BatchStatus::Confirmed,
-                 "Failed" => BatchStatus::Failed,
+                "Failed" => BatchStatus::Failed,
                 _ => continue,
             };
-            
-             let uuid = Uuid::parse_str(&id_str).unwrap();
-             
-             batches.push(Batch {
+
+            let uuid = Uuid::parse_str(&id_str).unwrap();
+
+            batches.push(Batch {
                 id: BatchId(uuid),
                 data_file: row.try_get("data_file").unwrap_or_default(),
                 new_root: row.try_get("new_root").unwrap_or_default(),
@@ -169,9 +183,9 @@ impl Storage for PostgresStorage {
                 attempts: row.try_get::<i32, _>("attempts").unwrap_or(0) as u32,
                 created_at: row.try_get("created_at").unwrap(),
                 updated_at: row.try_get("updated_at").unwrap(),
-             });
+            });
         }
-        
+
         Ok(batches)
     }
 }

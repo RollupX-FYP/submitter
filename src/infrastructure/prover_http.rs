@@ -1,14 +1,14 @@
 use crate::application::ports::{ProofProvider, ProofResponse};
 use crate::domain::{batch::BatchId, errors::DomainError};
 use async_trait::async_trait;
+use backoff::{future::retry, ExponentialBackoff};
+use metrics::{counter, histogram};
 use reqwest::Client;
 use std::sync::Arc;
+use std::time::Duration;
+use std::time::Instant;
 use tokio::sync::Mutex;
 use tracing::{info, warn};
-use backoff::{ExponentialBackoff, future::retry};
-use std::time::Duration;
-use metrics::{counter, histogram};
-use std::time::Instant;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum CircuitState {
@@ -76,7 +76,7 @@ impl HttpProofProvider {
         let mut count = self.failure_count.lock().await;
         *count += 1;
         *self.last_failure.lock().await = std::time::Instant::now();
-        
+
         if *count >= 5 {
             let mut state = self.circuit_state.lock().await;
             *state = CircuitState::Open;
@@ -88,13 +88,19 @@ impl HttpProofProvider {
 
 #[async_trait]
 impl ProofProvider for HttpProofProvider {
-    async fn get_proof(&self, batch_id: &BatchId, public_inputs: &[u8]) -> Result<ProofResponse, DomainError> {
+    async fn get_proof(
+        &self,
+        batch_id: &BatchId,
+        public_inputs: &[u8],
+    ) -> Result<ProofResponse, DomainError> {
         self.check_circuit().await?;
 
         let start = Instant::now();
 
         let operation = || async {
-            let res = self.client.post(&format!("{}/prove", self.url))
+            let res = self
+                .client
+                .post(format!("{}/prove", self.url))
                 .json(&serde_json::json!({
                     "batch_id": batch_id,
                     "public_inputs": public_inputs
@@ -105,25 +111,29 @@ impl ProofProvider for HttpProofProvider {
 
             if !res.status().is_success() {
                 // If it's a 4xx error, maybe we shouldn't retry? But for this test we simulate 500.
-                return Err(backoff::Error::transient(DomainError::Prover(format!("Status: {}", res.status()))));
+                return Err(backoff::Error::transient(DomainError::Prover(format!(
+                    "Status: {}",
+                    res.status()
+                ))));
             }
 
-            let body: ProofResponse = res.json().await
-                .map_err(|e| backoff::Error::permanent(DomainError::Prover(format!("Parse error: {}", e))))?;
-            
+            let body: ProofResponse = res.json().await.map_err(|e| {
+                backoff::Error::permanent(DomainError::Prover(format!("Parse error: {}", e)))
+            })?;
+
             Ok(body)
         };
 
         // Clone settings for this run
         let backoff = self.backoff_settings.clone();
-        
+
         match retry(backoff, operation).await {
             Ok(proof) => {
                 self.record_success().await;
                 histogram!("prover_request_duration_seconds").record(start.elapsed().as_secs_f64());
                 counter!("prover_requests_total", "result" => "success").increment(1);
                 Ok(proof)
-            },
+            }
             Err(e) => {
                 self.record_failure().await;
                 counter!("prover_requests_total", "result" => "error").increment(1);
@@ -136,17 +146,19 @@ impl ProofProvider for HttpProofProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use wiremock::{MockServer, Mock, ResponseTemplate};
     use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
 
     #[tokio::test]
     async fn test_circuit_breaker_trip() {
         let mock_server = MockServer::start().await;
-        
+
         // Configure backoff to fail fast (1ms max elapsed time)
-        let mut backoff = ExponentialBackoff::default();
-        backoff.max_elapsed_time = Some(Duration::from_millis(1));
-        
+        let backoff = ExponentialBackoff {
+            max_elapsed_time: Some(Duration::from_millis(1)),
+            ..ExponentialBackoff::default()
+        };
+
         let provider = HttpProofProvider::new(mock_server.uri()).with_backoff(backoff);
         let id = BatchId::new();
 
@@ -158,7 +170,7 @@ mod tests {
 
         // Trip the breaker (need 5 failures)
         for _ in 0..6 {
-             let _ = provider.get_proof(&id, &[]).await;
+            let _ = provider.get_proof(&id, &[]).await;
         }
 
         // Verify state
@@ -169,10 +181,12 @@ mod tests {
     #[tokio::test]
     async fn test_circuit_breaker_recovery() {
         let mock_server = MockServer::start().await;
-        
-        let mut backoff = ExponentialBackoff::default();
-        backoff.max_elapsed_time = Some(Duration::from_millis(1));
-        
+
+        let backoff = ExponentialBackoff {
+            max_elapsed_time: Some(Duration::from_millis(1)),
+            ..ExponentialBackoff::default()
+        };
+
         let provider = HttpProofProvider::new(mock_server.uri()).with_backoff(backoff);
         let id = BatchId::new();
 
@@ -184,12 +198,12 @@ mod tests {
             .await;
 
         for _ in 0..5 {
-             let _ = provider.get_proof(&id, &[]).await;
+            let _ = provider.get_proof(&id, &[]).await;
         }
-        
+
         // 2. Force state to Open manually
         *provider.last_failure.lock().await = std::time::Instant::now() - Duration::from_secs(31);
-        
+
         // 3. Next call should be HalfOpen allowed, succeed
         mock_server.reset().await;
         Mock::given(method("POST"))
@@ -199,10 +213,10 @@ mod tests {
             })))
             .mount(&mock_server)
             .await;
-            
+
         let res = provider.get_proof(&id, &[]).await;
         assert!(res.is_ok());
-        
+
         // 4. State should be Closed
         let state = *provider.circuit_state.lock().await;
         assert_eq!(state, CircuitState::Closed);

@@ -1,11 +1,11 @@
 # Builder stage
-FROM rust:1.76-bookworm as builder
+FROM rust:1.83-bookworm as builder
 
 WORKDIR /usr/src/app
 COPY . .
 
 # Build the application
-RUN cargo install --path .
+RUN cargo install --locked --path .
 
 # Runtime stage
 FROM debian:bookworm-slim

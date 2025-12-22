@@ -13,9 +13,7 @@ jobs:
     name: Detect project layout
     runs-on: ubuntu-latest
     outputs:
-      contracts_dir: ${{ steps.set.outputs.contracts_dir }}
       submitter_dir: ${{ steps.set.outputs.submitter_dir }}
-      has_contracts: ${{ steps.set.outputs.has_contracts }}
       has_submitter: ${{ steps.set.outputs.has_submitter }}
     steps:
       - uses: actions/checkout@v4
@@ -23,18 +21,6 @@ jobs:
       - id: set
         shell: bash
         run: |
-          # contracts dir detection
-          if [ -f "contracts/package.json" ]; then
-            echo "contracts_dir=contracts" >> $GITHUB_OUTPUT
-            echo "has_contracts=true" >> $GITHUB_OUTPUT
-          elif [ -f "package.json" ]; then
-            echo "contracts_dir=." >> $GITHUB_OUTPUT
-            echo "has_contracts=true" >> $GITHUB_OUTPUT
-          else
-            echo "contracts_dir=" >> $GITHUB_OUTPUT
-            echo "has_contracts=false" >> $GITHUB_OUTPUT
-          fi
-
           # submitter dir detection
           if [ -f "submitter/Cargo.toml" ]; then
             echo "submitter_dir=submitter" >> $GITHUB_OUTPUT
@@ -46,46 +32,6 @@ jobs:
             echo "submitter_dir=" >> $GITHUB_OUTPUT
             echo "has_submitter=false" >> $GITHUB_OUTPUT
           fi
-
-  contracts:
-    name: Contracts (Node/Hardhat)
-    needs: detect
-    if: needs.detect.outputs.has_contracts == 'true'
-    runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: ${{ needs.detect.outputs.contracts_dir }}
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: "20"
-          cache: "npm"
-          cache-dependency-path: |
-            ${{ needs.detect.outputs.contracts_dir }}/package-lock.json
-            ${{ needs.detect.outputs.contracts_dir }}/npm-shrinkwrap.json
-
-      - name: Install deps
-        run: npm ci
-
-      - name: Format check (optional)
-        run: npm run format:check --if-present
-
-      - name: Lint (optional)
-        run: npm run lint --if-present
-
-      - name: Compile
-        run: npm run build --if-present
-
-      - name: Hardhat compile fallback
-        run: npx hardhat compile
-
-      - name: Tests
-        run: npm test --if-present
-
-      - name: Hardhat tests fallback
-        run: npx hardhat test
 
   submitter:
     name: Submitter (Rust)

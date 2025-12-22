@@ -10,6 +10,7 @@ pub struct Config {
     pub da: DaConfig,
     pub batch: BatchConfig,
     // Optional prover URL
+    #[allow(dead_code)]
     pub prover: Option<ProverConfig>,
 }
 
@@ -54,6 +55,7 @@ pub struct BatchConfig {
 
 #[derive(Debug, Deserialize)]
 pub struct ProverConfig {
+    #[allow(dead_code)]
     pub url: String,
 }
 
@@ -66,8 +68,11 @@ pub fn load_config(path: PathBuf) -> Result<Config> {
 
 fn validate_config(cfg: &Config) -> Result<()> {
     // Validate addresses
-    cfg.contracts.bridge.parse::<Address>().context("Invalid bridge address")?;
-    
+    cfg.contracts
+        .bridge
+        .parse::<Address>()
+        .context("Invalid bridge address")?;
+
     // Validate specific requirements based on mode
     if cfg.da.mode == DaMode::Blob && cfg.batch.blob_versioned_hash.is_none() {
         anyhow::bail!("blob mode needs batch.blob_versioned_hash in yaml");
@@ -162,7 +167,7 @@ batch:
 
     #[test]
     fn test_prover_config() {
-         let yaml = r#"
+        let yaml = r#"
 network:
   rpc_url: "http://localhost:8545"
   chain_id: 123

@@ -23,14 +23,16 @@ struct Args {
 async fn main() -> Result<()> {
     dotenv().ok();
     tracing_subscriber::fmt::init();
-    
+
     let args = Args::parse();
 
     let cfg = config::load_config(args.config)?;
 
     let pk = std::env::var("SUBMITTER_PRIVATE_KEY")
         .context("Missing env SUBMITTER_PRIVATE_KEY (DO NOT put private keys in yaml)")?;
-    let wallet: LocalWallet = pk.parse::<LocalWallet>()?.with_chain_id(cfg.network.chain_id);
+    let wallet: LocalWallet = pk
+        .parse::<LocalWallet>()?
+        .with_chain_id(cfg.network.chain_id);
 
     let provider = Provider::<Http>::try_from(cfg.network.rpc_url.as_str())?;
     let client = Arc::new(SignerMiddleware::new(provider, wallet));
@@ -72,13 +74,18 @@ async fn main() -> Result<()> {
             let use_opcode = cfg.da.blob_binding == config::BlobBinding::Opcode;
 
             let tx_hash = submitter
-                .submit_blob(expected.into(), blob_index, use_opcode, new_root.into(), proof)
+                .submit_blob(
+                    expected.into(),
+                    blob_index,
+                    use_opcode,
+                    new_root.into(),
+                    proof,
+                )
                 .await?;
 
             info!(
                 "✅ blob batch submitted ({:?} binding). tx={:?}",
-                cfg.da.blob_binding,
-                tx_hash
+                cfg.da.blob_binding, tx_hash
             );
         }
     }

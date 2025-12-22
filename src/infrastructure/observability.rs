@@ -1,6 +1,6 @@
 use axum::{routing::get, Router};
 use metrics_exporter_prometheus::{PrometheusBuilder, PrometheusHandle};
-use std::{net::SocketAddr, time::Duration};
+use std::net::SocketAddr;
 use tokio::net::TcpListener;
 use tracing::info;
 
@@ -28,14 +28,15 @@ pub fn init_metrics() -> PrometheusHandle {
 }
 
 pub async fn start_metrics_server(handle: PrometheusHandle) {
-    let app = Router::new().route(
-        "/metrics",
-        get(move || std::future::ready(handle.render())),
-    );
+    let app = Router::new().route("/metrics", get(move || std::future::ready(handle.render())));
 
     let addr = SocketAddr::from(([0, 0, 0, 0], 9000));
     info!("Metrics server listening on {}", addr);
-    
-    let listener = TcpListener::bind(addr).await.expect("failed to bind metrics port");
-    axum::serve(listener, app).await.expect("failed to start metrics server");
+
+    let listener = TcpListener::bind(addr)
+        .await
+        .expect("failed to bind metrics port");
+    axum::serve(listener, app)
+        .await
+        .expect("failed to start metrics server");
 }
