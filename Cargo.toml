@@ -22,7 +22,7 @@ ethers = { version = "2", features = ["abigen", "rustls"] }
 # New dependencies
 sqlx = { version = "0.7", features = ["runtime-tokio", "sqlite", "postgres", "macros", "uuid", "chrono"] }
 reqwest = { version = "0.11", features = ["json"] }
-axum = "0.7"
+axum = "0.8"
 metrics = "0.22"
 metrics-exporter-prometheus = "0.13"
 uuid = { version = "1.7", features = ["v4", "v5", "serde"] }
