@@ -54,36 +54,6 @@ jobs:
           name: rust-lcov
           path: ${{ needs.detect.outputs.submitter_dir }}/lcov.info
 
-  contracts_cov:
-    name: Contracts coverage
-    needs: detect
-    if: needs.detect.outputs.has_contracts == 'true'
-    runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: ${{ needs.detect.outputs.contracts_dir }}
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: "20"
-          cache: "npm"
-          cache-dependency-path: |
-            ${{ needs.detect.outputs.contracts_dir }}/package-lock.json
-
-      - run: npm ci
-
-      - name: Coverage (requires solidity-coverage)
-        run: npm run coverage --if-present
-
-      - name: Upload lcov artifact (if produced)
-        uses: actions/upload-artifact@v6
-        with:
-          name: contracts-lcov
-          path: |
-            ${{ needs.detect.outputs.contracts_dir }}/coverage/lcov.info
-          if-no-files-found: ignore
-
   codecov:
     name: Upload to Codecov (free for public repos)
     needs: [rust_cov, contracts_cov]
@@ -100,13 +70,5 @@ jobs:
         with:
           files: coverage/rust-lcov/lcov.info
           flags: rust
-        env:
-          CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
-
-      - name: Upload Contracts coverage
-        uses: codecov/codecov-action@v5
-        with:
-          files: coverage/contracts-lcov/lcov.info
-          flags: contracts
         env:
           CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
