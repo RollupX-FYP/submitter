@@ -16,7 +16,7 @@ jobs:
       submitter_dir: ${{ steps.set.outputs.submitter_dir }}
       has_submitter: ${{ steps.set.outputs.has_submitter }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - id: set
         shell: bash
@@ -42,7 +42,7 @@ jobs:
       run:
         working-directory: ${{ needs.detect.outputs.submitter_dir }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - uses: dtolnay/rust-toolchain@stable
         with:
