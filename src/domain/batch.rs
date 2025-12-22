@@ -1,27 +1,35 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use uuid::Uuid;
 use std::fmt;
-use sha1_smol::Sha1;
+use uuid::Uuid;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct BatchId(pub Uuid);
+
+impl Default for BatchId {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl BatchId {
     pub fn new() -> Self {
         BatchId(Uuid::new_v4())
     }
-    
+
     pub fn deterministic(
         chain_id: u64,
         bridge_addr: &str,
-        data_hash: &str, 
-        new_root: &str, 
-        da_mode: &str
+        data_hash: &str,
+        new_root: &str,
+        da_mode: &str,
     ) -> Self {
         // Idempotency key construction:
         // chain_id | bridge_addr | data_hash | new_root | da_mode
-        let input = format!("{}|{}|{}|{}|{}", chain_id, bridge_addr, data_hash, new_root, da_mode);
+        let input = format!(
+            "{}|{}|{}|{}|{}",
+            chain_id, bridge_addr, data_hash, new_root, da_mode
+        );
         let namespace = Uuid::NAMESPACE_OID;
         BatchId(Uuid::new_v5(&namespace, input.as_bytes()))
     }
@@ -68,10 +76,10 @@ impl Batch {
     pub fn new(
         chain_id: u64,
         bridge_addr: &str,
-        data_file: String, 
+        data_file: String,
         data_hash: String,
-        new_root: String, 
-        da_mode: String
+        new_root: String,
+        da_mode: String,
     ) -> Self {
         let now = Utc::now();
         Self {
@@ -111,7 +119,12 @@ mod tests {
     #[test]
     fn test_batch_creation() {
         let batch = Batch::new(
-            1, "0xBridge", "file.txt".into(), "hash".into(), "root".into(), "blob".into()
+            1,
+            "0xBridge",
+            "file.txt".into(),
+            "hash".into(),
+            "root".into(),
+            "blob".into(),
         );
         assert_eq!(batch.status, BatchStatus::Discovered);
         assert_eq!(batch.attempts, 0);
@@ -120,7 +133,12 @@ mod tests {
     #[test]
     fn test_batch_transition() {
         let mut batch = Batch::new(
-            1, "0xBridge", "file.txt".into(), "hash".into(), "root".into(), "blob".into()
+            1,
+            "0xBridge",
+            "file.txt".into(),
+            "hash".into(),
+            "root".into(),
+            "blob".into(),
         );
         batch.transition_to(BatchStatus::Proving);
         assert_eq!(batch.status, BatchStatus::Proving);

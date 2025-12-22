@@ -3,7 +3,6 @@
 # -----------------------------
 /target/
 **/*.rs.bk
-Cargo.lock
 
 # If you want to COMMIT Cargo.lock (recommended for binaries/apps),
 # remove the "Cargo.lock" line above.
