@@ -26,8 +26,13 @@ The codebase is organized into four distinct layers:
     *   `da_calldata.rs`, `da_blob.rs` (Blockchain Interaction)
 
 ### `src/bin/` (Entry Point)
-*   **Wiring:** responsible *only* for parsing config, initializing adapters, and starting the orchestrator.
+*   **submitter.rs:** The production entry point (`cargo run --bin submitter`). It wires up the `Orchestrator`, `Storage` (SQLite/Postgres), `ProofProvider`, and `DaStrategy`.
+*   **Wiring:** Responsible *only* for parsing config, initializing adapters, and starting the orchestrator.
 *   **No Logic:** No business logic should exist here.
+
+### `src/main.rs` (Utility Script)
+*   **Script:** A lightweight, one-shot script (`cargo run --bin submitter-rs`) for simple submissions.
+*   **Scope:** Does **not** use the full DDD architecture (no Orchestrator/Storage). Useful for testing or simple manual operations.
 
 ---
 
