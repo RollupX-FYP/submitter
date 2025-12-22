@@ -1,0 +1,312 @@
+use crate::application::ports::{DaStrategy, ProofProvider, Storage};
+use crate::domain::{batch::{Batch, BatchStatus}, errors::DomainError};
+use metrics::{counter, histogram};
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+use tracing::{info, error, warn};
+
+pub struct Orchestrator {
+    storage: Arc<dyn Storage>,
+    prover: Arc<dyn ProofProvider>,
+    da_strategy: Arc<dyn DaStrategy>,
+    max_attempts: u32,
+}
+
+impl Orchestrator {
+    pub fn new(
+        storage: Arc<dyn Storage>,
+        prover: Arc<dyn ProofProvider>,
+        da_strategy: Arc<dyn DaStrategy>,
+    ) -> Self {
+        Self {
+            storage,
+            prover,
+            da_strategy,
+            max_attempts: 5,
+        }
+    }
+
+    pub async fn run(&self) -> Result<(), DomainError> {
+        info!("Orchestrator started");
+        loop {
+            if let Err(e) = self.process_pending_batches().await {
+                error!("Error processing batches: {}", e);
+            }
+            tokio::time::sleep(Duration::from_secs(5)).await;
+        }
+    }
+
+    pub async fn process_pending_batches(&self) -> Result<(), DomainError> {
+        let batches = self.storage.get_pending_batches().await?;
+        
+        for mut batch in batches {
+            self.process_batch(&mut batch).await?;
+        }
+        Ok(())
+    }
+
+    async fn handle_failure(&self, batch: &mut Batch, error_msg: String) -> Result<(), DomainError> {
+        batch.attempts += 1;
+        
+        counter!("batch_failures_total", "batch_id" => batch.id.to_string()).increment(1);
+        
+        if batch.attempts >= self.max_attempts {
+            warn!("Batch {} FAILED permanently after {} attempts: {}", batch.id, batch.attempts, error_msg);
+            batch.transition_to(BatchStatus::Failed);
+            counter!("batches_failed_permanent_total").increment(1);
+        } else {
+             warn!("Batch {} failed (attempt {}/{}): {}. Retrying...", batch.id, batch.attempts, self.max_attempts, error_msg);
+        }
+        self.storage.save_batch(batch).await
+    }
+
+    async fn process_batch(&self, batch: &mut Batch) -> Result<(), DomainError> {
+        info!("Processing batch {} in status {}", batch.id, batch.status);
+        let start = Instant::now();
+        
+        match batch.status {
+            BatchStatus::Discovered => {
+                batch.transition_to(BatchStatus::Proving);
+                self.storage.save_batch(batch).await?;
+                counter!("batch_transitions_total", "from" => "Discovered", "to" => "Proving").increment(1);
+            }
+            BatchStatus::Proving => {
+                match self.prover.get_proof(&batch.id, &[]).await {
+                    Ok(response) => {
+                        batch.proof = Some(response.proof);
+                        batch.transition_to(BatchStatus::Proved);
+                        batch.attempts = 0;
+                        self.storage.save_batch(batch).await?;
+                        
+                        counter!("batch_transitions_total", "from" => "Proving", "to" => "Proved").increment(1);
+                        histogram!("prove_duration_seconds").record(start.elapsed().as_secs_f64());
+                    }
+                    Err(e) => {
+                        self.handle_failure(batch, e.to_string()).await?;
+                    }
+                }
+            }
+            BatchStatus::Proved => {
+                batch.transition_to(BatchStatus::Submitting);
+                self.storage.save_batch(batch).await?;
+                counter!("batch_transitions_total", "from" => "Proved", "to" => "Submitting").increment(1);
+            }
+            BatchStatus::Submitting => {
+                if let Some(proof) = &batch.proof {
+                    match self.da_strategy.submit(batch, proof).await {
+                        Ok(tx_hash) => {
+                            batch.tx_hash = Some(tx_hash);
+                            batch.transition_to(BatchStatus::Submitted);
+                            batch.attempts = 0;
+                            self.storage.save_batch(batch).await?;
+                            
+                            counter!("batch_transitions_total", "from" => "Submitting", "to" => "Submitted").increment(1);
+                            histogram!("submit_tx_duration_seconds").record(start.elapsed().as_secs_f64());
+                        }
+                        Err(e) => {
+                            self.handle_failure(batch, e.to_string()).await?;
+                        }
+                    }
+                } else {
+                    error!("Missing proof for batch {}", batch.id);
+                    batch.transition_to(BatchStatus::Failed);
+                    self.storage.save_batch(batch).await?;
+                    counter!("batches_failed_permanent_total", "reason" => "missing_proof").increment(1);
+                }
+            }
+            BatchStatus::Submitted => {
+                if let Some(tx_hash) = &batch.tx_hash {
+                    match self.da_strategy.check_confirmation(tx_hash).await {
+                        Ok(confirmed) => {
+                            if confirmed {
+                                batch.transition_to(BatchStatus::Confirmed);
+                                self.storage.save_batch(batch).await?;
+                                info!("Batch {} CONFIRMED", batch.id);
+                                
+                                counter!("batch_transitions_total", "from" => "Submitted", "to" => "Confirmed").increment(1);
+                                counter!("batches_completed_total").increment(1);
+                                
+                                // Calculate total duration since creation
+                                let total_duration = chrono::Utc::now().signed_duration_since(batch.created_at);
+                                histogram!("batch_e2e_duration_seconds").record(total_duration.num_seconds() as f64);
+                            } else {
+                                info!("Batch {} still pending confirmation", batch.id);
+                            }
+                        }
+                        Err(e) => {
+                             warn!("Error checking confirmation for {}: {}", batch.id, e);
+                             // If it's a transient check error, we might not want to count as failure attempt?
+                             // But if the check fails permanently (e.g. reverted), we should handle failure.
+                             // Currently check_confirmation returns false if pending, Error if reverted or rpc error.
+                             // Ideally we distinguish Revert vs RPC Error. For now treat as failure.
+                             self.handle_failure(batch, e.to_string()).await?;
+                        }
+                    }
+                } else {
+                    batch.transition_to(BatchStatus::Submitting);
+                    self.storage.save_batch(batch).await?;
+                    counter!("batch_reverted_to_submitting_total").increment(1);
+                }
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::application::ports::{ProofResponse, ProofProvider, DaStrategy, Storage};
+    use crate::domain::{batch::{Batch, BatchId}, errors::DomainError};
+    use async_trait::async_trait;
+    use std::sync::{Mutex, Arc};
+
+    // Mocks
+    struct MockStorage {
+        batch: Mutex<Option<Batch>>,
+    }
+    
+    #[async_trait]
+    impl Storage for MockStorage {
+        async fn save_batch(&self, batch: &Batch) -> Result<(), DomainError> {
+            *self.batch.lock().unwrap() = Some(batch.clone());
+            Ok(())
+        }
+        async fn get_batch(&self, _id: BatchId) -> Result<Option<Batch>, DomainError> {
+            Ok(self.batch.lock().unwrap().clone())
+        }
+        async fn get_pending_batches(&self) -> Result<Vec<Batch>, DomainError> {
+            let b = self.batch.lock().unwrap().clone();
+            Ok(b.into_iter().collect())
+        }
+    }
+
+    struct MockProver {
+        should_fail: bool,
+    }
+    
+    #[async_trait]
+    impl ProofProvider for MockProver {
+        async fn get_proof(&self, _id: &BatchId, _input: &[u8]) -> Result<ProofResponse, DomainError> {
+            if self.should_fail {
+                Err(DomainError::Prover("fail".into()))
+            } else {
+                Ok(ProofResponse { proof: "p".into() })
+            }
+        }
+    }
+
+    struct MockDa {
+        should_fail_submit: bool,
+        should_fail_confirm: bool,
+        confirm_result: bool,
+    }
+
+    #[async_trait]
+    impl DaStrategy for MockDa {
+        async fn submit(&self, _b: &Batch, _p: &str) -> Result<String, DomainError> {
+            if self.should_fail_submit {
+                Err(DomainError::Da("fail".into()))
+            } else {
+                Ok("0xhash".into())
+            }
+        }
+        async fn check_confirmation(&self, _tx: &str) -> Result<bool, DomainError> {
+            if self.should_fail_confirm {
+                Err(DomainError::Da("revert".into()))
+            } else {
+                Ok(self.confirm_result)
+            }
+        }
+    }
+
+    fn create_orchestrator(
+        batch: Batch, 
+        prover_fail: bool, 
+        da_fail: bool, 
+        da_confirm_fail: bool
+    ) -> (Orchestrator, Arc<MockStorage>) {
+        let storage = Arc::new(MockStorage { batch: Mutex::new(Some(batch)) });
+        let prover = Arc::new(MockProver { should_fail: prover_fail });
+        let da = Arc::new(MockDa { 
+            should_fail_submit: da_fail, 
+            should_fail_confirm: da_confirm_fail,
+            confirm_result: true 
+        });
+        
+        (Orchestrator::new(storage.clone(), prover, da), storage)
+    }
+
+    #[tokio::test]
+    async fn test_proving_success() {
+        let batch = Batch::new(1, "b", "f".into(), "h".into(), "r".into(), "m".into());
+        let (orch, store) = create_orchestrator(batch.clone(), false, false, false);
+        
+        // Discovered -> Proving
+        orch.process_pending_batches().await.unwrap();
+        // Proving -> Proved
+        orch.process_pending_batches().await.unwrap();
+        
+        let updated = store.get_batch(batch.id).await.unwrap().unwrap();
+        assert_eq!(updated.status, BatchStatus::Proved);
+        assert!(updated.proof.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_proving_retry() {
+        let mut batch = Batch::new(1, "b", "f".into(), "h".into(), "r".into(), "m".into());
+        batch.status = BatchStatus::Proving;
+        
+        let (orch, store) = create_orchestrator(batch.clone(), true, false, false);
+        
+        orch.process_pending_batches().await.unwrap();
+        
+        let updated = store.get_batch(batch.id).await.unwrap().unwrap();
+        assert_eq!(updated.status, BatchStatus::Proving);
+        assert_eq!(updated.attempts, 1);
+    }
+
+    #[tokio::test]
+    async fn test_proving_dead_letter() {
+        let mut batch = Batch::new(1, "b", "f".into(), "h".into(), "r".into(), "m".into());
+        batch.status = BatchStatus::Proving;
+        batch.attempts = 4; // Max is 5
+        
+        let (orch, store) = create_orchestrator(batch.clone(), true, false, false);
+        
+        orch.process_pending_batches().await.unwrap();
+        
+        let updated = store.get_batch(batch.id).await.unwrap().unwrap();
+        assert_eq!(updated.status, BatchStatus::Failed);
+    }
+
+    #[tokio::test]
+    async fn test_submitting_missing_proof() {
+        let mut batch = Batch::new(1, "b", "f".into(), "h".into(), "r".into(), "m".into());
+        batch.status = BatchStatus::Submitting;
+        batch.proof = None; // Should fail
+        
+        let (orch, store) = create_orchestrator(batch.clone(), false, false, false);
+        
+        orch.process_pending_batches().await.unwrap();
+        
+        let updated = store.get_batch(batch.id).await.unwrap().unwrap();
+        assert_eq!(updated.status, BatchStatus::Failed);
+    }
+
+    #[tokio::test]
+    async fn test_submitted_revert() {
+        let mut batch = Batch::new(1, "b", "f".into(), "h".into(), "r".into(), "m".into());
+        batch.status = BatchStatus::Submitted;
+        batch.tx_hash = Some("0x123".into());
+        
+        // Simulate Revert (error in check_confirmation)
+        let (orch, store) = create_orchestrator(batch.clone(), false, false, true);
+        
+        orch.process_pending_batches().await.unwrap();
+        
+        let updated = store.get_batch(batch.id).await.unwrap().unwrap();
+        assert_eq!(updated.attempts, 1); // Should count as failure
+    }
+}

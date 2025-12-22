@@ -9,6 +9,8 @@ pub struct Config {
     pub contracts: Contracts,
     pub da: DaConfig,
     pub batch: BatchConfig,
+    // Optional prover URL
+    pub prover: Option<ProverConfig>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -48,6 +50,11 @@ pub struct BatchConfig {
     pub data_file: String,
     pub new_root: String,
     pub blob_versioned_hash: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ProverConfig {
+    pub url: String,
 }
 
 pub fn load_config(path: PathBuf) -> Result<Config> {
@@ -151,5 +158,27 @@ batch:
 "#;
         let cfg: Config = serde_yaml::from_str(yaml).unwrap();
         assert!(validate_config(&cfg).is_err());
+    }
+
+    #[test]
+    fn test_prover_config() {
+         let yaml = r#"
+network:
+  rpc_url: "http://localhost:8545"
+  chain_id: 123
+contracts:
+  bridge: "0x0000000000000000000000000000000000000001"
+da:
+  mode: "calldata"
+  blob_binding: "mock"
+batch:
+  data_file: "data.txt"
+  new_root: "0x00"
+prover:
+  url: "http://prover:3000"
+"#;
+        let cfg: Config = serde_yaml::from_str(yaml).unwrap();
+        assert!(cfg.prover.is_some());
+        assert_eq!(cfg.prover.unwrap().url, "http://prover:3000");
     }
 }

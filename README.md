@@ -1,78 +1,51 @@
-# Submitter RS
+# ZK Rollup Batch Submitter
 
-A Rust-based ZK Rollup Batch Submitter. This service watches for batch files and submits them to the configured bridge contract on an Ethereum-compatible chain (e.g., Anvil, Sepolia).
+A production-grade, highly reliable Rust service for submitting ZK Rollup batches to Ethereum.
 
 ## Features
 
-- **Multi-mode Submission**: Supports both standard `calldata` and `blob` (EIP-4844) transaction types.
-- **Configurable**: Fully configurable via YAML configuration files.
-- **Type-safe**: Uses strict typing for configuration and ABI interactions.
-- **Dockerized**: Ready for deployment using Docker.
+*   **Robust Architecture:** Follows **Domain-Driven Design (DDD)** principles.
+*   **Reliability:** Implements **Outbox Pattern**, **Saga Workflow**, **Circuit Breakers**, and **Crash Recovery**.
+*   **Idempotency:** Deterministic batch processing prevents double-spending.
+*   **Observability:** Built-in Prometheus metrics and structured JSON logging.
+*   **Flexibility:** Supports multiple Data Availability (DA) strategies (`Calldata` and `Blob` EIP-4844).
+*   **Persistence:** Supports both **SQLite** (local/dev) and **PostgreSQL** (production).
 
-## Configuration
+## Documentation
 
-Configuration is managed via a YAML file. An example `submitter.yaml` is provided:
+*   [Best Practices & Architecture](BEST_PRACTICES.md): Detailed explanation of the system design and patterns.
+*   [Agent Instructions](AGENTS.md): Guidelines for contributors and AI agents.
 
-```yaml
-network:
-  rpc_url: "http://127.0.0.1:8545"
-  chain_id: 31337
-
-contracts:
-  bridge: "0xYOUR_BRIDGE_ADDRESS"
-
-da:
-  mode: "calldata" # Options: "calldata" | "blob"
-  blob_binding: "mock" # Options: "mock" | "opcode"
-  blob_index: 0 # Optional
-
-batch:
-  data_file: "path/to/batch.txt"
-  new_root: "0x..."
-  blob_versioned_hash: "0x..." # Required for blob mode
-```
-
-## Running Locally
+## Getting Started
 
 ### Prerequisites
+*   Rust (latest stable)
+*   Docker (for Postgres integration tests)
 
-- Rust (latest stable)
-- OpenSSL (`libssl-dev` on Ubuntu/Debian)
-
-### Build and Run
-
-```bash
-# Build
-cargo build --release
-
-# Run
-export SUBMITTER_PRIVATE_KEY="your_private_key_hex"
-./target/release/submitter-rs --config submitter.yaml
-```
-
-**Note**: You must provide the private key via the `SUBMITTER_PRIVATE_KEY` environment variable. Do not commit private keys to files.
-
-## Running with Docker
-
-### Build Image
+### Configuration
+Create a `submitter.yaml` file (see `submitter.yaml` example in repo) or pass the path via CLI.
 
 ```bash
-docker build -t submitter-rs .
+# Run with SQLite (default)
+cargo run -- --config submitter.yaml
+
+# Run with Postgres
+export DATABASE_URL="postgres://user:pass@localhost:5432/db"
+cargo run -- --config submitter.yaml
 ```
 
-### Run Container
-
-```bash
-docker run -v $(pwd)/submitter.yaml:/app/submitter.yaml \
-           -v $(pwd)/data:/app/data \
-           -e SUBMITTER_PRIVATE_KEY="your_private_key_hex" \
-           submitter-rs --config /app/submitter.yaml
-```
+### Metrics
+The service exposes Prometheus metrics on port `9000` by default.
+*   Endpoint: `http://localhost:9000/metrics`
 
 ## Testing
 
-Run unit tests:
-
 ```bash
+# Run unit and integration tests (SQLite)
 cargo test
+
+# Run integration tests with Postgres
+docker compose up -d postgres
+export DATABASE_URL="postgres://postgres:postgres@localhost:5432/submitter"
+cargo test --test integration_test
 ```
