@@ -1,55 +1,74 @@
-name: Security
+name: Security (DevSecOps)
 
 on:
   push:
-    branches: [main]
+    branches: ["main"]
   pull_request:
+    branches: ["main"]
+  schedule:
+    - cron: "0 3 * * 1" # every Monday 03:00 UTC
+  workflow_dispatch:
 
 permissions:
   contents: read
 
 jobs:
-  gitleaks:
-    name: Secret scanning (gitleaks)
+  dependency-review:
+    name: Dependency Review
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Dependency Review
+        uses: actions/dependency-review-action@v4
         with:
-          fetch-depth: 0
-      - uses: gitleaks/gitleaks-action@v2
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GITLEAKS_LICENSE: ${{ secrets.GITLEAKS_LICENSE }}
-          GITLEAKS_ENABLE_COMMENTS: "false"
+          fail-on-severity: high
 
-  deps_audit:
-    name: Dependency audits (npm + cargo)
+  codeql:
+    name: CodeQL (JS/TS)
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
     steps:
       - uses: actions/checkout@v4
-
-      - name: npm audit (if package-lock exists)
-        if: hashFiles('**/package-lock.json') != ''
-        run: |
-          npm ci --ignore-scripts
-          npm audit --audit-level=high || true
-
-      - name: cargo audit (if Cargo.lock exists)
-        if: hashFiles('**/Cargo.lock') != ''
-        run: |
-          cargo install cargo-audit --locked
-          cargo audit || true
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v4
+        with:
+          languages: javascript-typescript
+      - name: Autobuild
+        uses: github/codeql-action/autobuild@v4
+      - name: Analyze
+        uses: github/codeql-action/analyze@v4
 
   slither:
     name: Slither (Solidity static analysis)
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
     steps:
       - uses: actions/checkout@v4
-
       - name: Run Slither
-        if: hashFiles('**/*.sol') != ''
         uses: crytic/slither-action@v0.4.1
         with:
-          fail-on: medium
-          # If your contracts are in a folder, set:
-          # target: contracts
+          target: .
+          sarif: slither.sarif
+          node-version: 20
+          slither-args: --exclude-dependencies
+
+      - name: Upload SARIF to GitHub Security tab
+        uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: slither.sarif
+
+  secrets-scan:
+    name: Secret Scan (Gitleaks)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Gitleaks
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLEAKS_LICENSE: ${{ secrets.GITLEAKS_LICENSE }}
+          GITLEAKS_ENABLE_COMMENTS: "false"
