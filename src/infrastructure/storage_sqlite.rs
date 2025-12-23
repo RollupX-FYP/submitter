@@ -5,7 +5,7 @@ use crate::domain::{
 };
 use async_trait::async_trait;
 use sqlx::{sqlite::SqlitePoolOptions, Pool, Row, Sqlite};
-use tracing::info;
+use tracing::{info, warn};
 use uuid::Uuid;
 
 pub struct SqliteStorage {
@@ -137,14 +137,16 @@ impl Storage for SqliteStorage {
                 tx_hash: row.try_get("tx_hash").ok(),
                 attempts: row.try_get("attempts").unwrap_or(0),
                 created_at: chrono::DateTime::parse_from_rfc3339(
-                    &row.try_get::<String, _>("created_at").unwrap_or_default(),
+                    &row.try_get::<String, _>("created_at")
+                        .map_err(|e| DomainError::Storage(e.to_string()))?,
                 )
-                .unwrap()
+                .map_err(|e| DomainError::Storage(format!("Invalid created_at format: {}", e)))?
                 .with_timezone(&chrono::Utc),
                 updated_at: chrono::DateTime::parse_from_rfc3339(
-                    &row.try_get::<String, _>("updated_at").unwrap_or_default(),
+                    &row.try_get::<String, _>("updated_at")
+                        .map_err(|e| DomainError::Storage(e.to_string()))?,
                 )
-                .unwrap()
+                .map_err(|e| DomainError::Storage(format!("Invalid updated_at format: {}", e)))?
                 .with_timezone(&chrono::Utc),
             }))
         } else {
@@ -161,8 +163,22 @@ impl Storage for SqliteStorage {
 
         let mut batches = Vec::new();
         for row in rows {
-            let id_str: String = row.try_get("id").unwrap();
-            let status_str: String = row.try_get("status").unwrap();
+            let id_str: String = match row.try_get("id") {
+                Ok(s) => s,
+                Err(e) => {
+                    warn!("Skipping batch with missing/invalid id: {}", e);
+                    continue;
+                }
+            };
+
+            let status_str: String = match row.try_get("status") {
+                Ok(s) => s,
+                Err(e) => {
+                    warn!("Skipping batch {} with missing/invalid status: {}", id_str, e);
+                    continue;
+                }
+            };
+
             let status = match status_str.as_str() {
                 "Discovered" => BatchStatus::Discovered,
                 "Proving" => BatchStatus::Proving,
@@ -171,10 +187,44 @@ impl Storage for SqliteStorage {
                 "Submitted" => BatchStatus::Submitted,
                 "Confirmed" => BatchStatus::Confirmed,
                 "Failed" => BatchStatus::Failed,
-                _ => continue,
+                _ => {
+                    warn!("Skipping batch {} with unknown status: {}", id_str, status_str);
+                    continue;
+                }
             };
 
-            let uuid = Uuid::parse_str(&id_str).unwrap();
+            let uuid = match Uuid::parse_str(&id_str) {
+                Ok(u) => u,
+                Err(e) => {
+                    warn!("Skipping batch {} with invalid UUID: {}", id_str, e);
+                    continue;
+                }
+            };
+
+            // Safely parse timestamps
+            let created_at_str: String = row.try_get("created_at").unwrap_or_default();
+            let created_at = match chrono::DateTime::parse_from_rfc3339(&created_at_str) {
+                Ok(dt) => dt.with_timezone(&chrono::Utc),
+                Err(e) => {
+                    warn!(
+                        "Skipping batch {} with invalid created_at ({}): {}",
+                        id_str, created_at_str, e
+                    );
+                    continue;
+                }
+            };
+
+            let updated_at_str: String = row.try_get("updated_at").unwrap_or_default();
+            let updated_at = match chrono::DateTime::parse_from_rfc3339(&updated_at_str) {
+                Ok(dt) => dt.with_timezone(&chrono::Utc),
+                Err(e) => {
+                    warn!(
+                        "Skipping batch {} with invalid updated_at ({}): {}",
+                        id_str, updated_at_str, e
+                    );
+                    continue;
+                }
+            };
 
             batches.push(Batch {
                 id: BatchId(uuid),
@@ -185,19 +235,71 @@ impl Storage for SqliteStorage {
                 proof: row.try_get("proof").ok(),
                 tx_hash: row.try_get("tx_hash").ok(),
                 attempts: row.try_get("attempts").unwrap_or(0),
-                created_at: chrono::DateTime::parse_from_rfc3339(
-                    &row.try_get::<String, _>("created_at").unwrap_or_default(),
-                )
-                .unwrap()
-                .with_timezone(&chrono::Utc),
-                updated_at: chrono::DateTime::parse_from_rfc3339(
-                    &row.try_get::<String, _>("updated_at").unwrap_or_default(),
-                )
-                .unwrap()
-                .with_timezone(&chrono::Utc),
+                created_at,
+                updated_at,
             });
         }
 
         Ok(batches)
+    }
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::Utc;
+
+    #[tokio::test]
+    async fn test_skip_malformed_rows() {
+        let storage = SqliteStorage::new("sqlite::memory:").await.unwrap();
+
+        // Insert valid batch
+        let id1 = Uuid::new_v4();
+        sqlx::query("INSERT INTO batches (id, data_file, new_root, status, da_mode, created_at, updated_at) VALUES (?, 'f', 'r', 'Discovered', 'm', ?, ?)")
+            .bind(id1.to_string())
+            .bind(Utc::now().to_rfc3339())
+            .bind(Utc::now().to_rfc3339())
+            .execute(&storage.pool).await.unwrap();
+
+        // Insert invalid batch (bad UUID)
+        sqlx::query("INSERT INTO batches (id, data_file, new_root, status, da_mode, created_at, updated_at) VALUES ('bad-uuid', 'f', 'r', 'Discovered', 'm', ?, ?)")
+            .bind(Utc::now().to_rfc3339())
+            .bind(Utc::now().to_rfc3339())
+            .execute(&storage.pool).await.unwrap();
+
+        // Insert invalid batch (bad Status)
+        let id2 = Uuid::new_v4();
+        sqlx::query("INSERT INTO batches (id, data_file, new_root, status, da_mode, created_at, updated_at) VALUES (?, 'f', 'r', 'BadStatus', 'm', ?, ?)")
+            .bind(id2.to_string())
+            .bind(Utc::now().to_rfc3339())
+            .bind(Utc::now().to_rfc3339())
+            .execute(&storage.pool).await.unwrap();
+
+        // Insert invalid batch (bad timestamp)
+        let id3 = Uuid::new_v4();
+        sqlx::query("INSERT INTO batches (id, data_file, new_root, status, da_mode, created_at, updated_at) VALUES (?, 'f', 'r', 'Discovered', 'm', 'invalid-time', ?)")
+            .bind(id3.to_string())
+            .bind(Utc::now().to_rfc3339())
+            .execute(&storage.pool).await.unwrap();
+
+        let pending = storage.get_pending_batches().await.unwrap();
+        // Should only have the first one
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].id.0, id1);
+    }
+
+    #[tokio::test]
+    async fn test_get_batch_malformed() {
+        let storage = SqliteStorage::new("sqlite::memory:").await.unwrap();
+        let id = Uuid::new_v4();
+        
+        // Insert batch with unknown status
+        sqlx::query("INSERT INTO batches (id, data_file, new_root, status, da_mode, created_at, updated_at) VALUES (?, 'f', 'r', 'Unknown', 'm', ?, ?)")
+            .bind(id.to_string())
+            .bind(Utc::now().to_rfc3339())
+            .bind(Utc::now().to_rfc3339())
+            .execute(&storage.pool).await.unwrap();
+
+        let res = storage.get_batch(BatchId(id)).await;
+        assert!(res.is_err());
     }
 }

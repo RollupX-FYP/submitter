@@ -12,6 +12,17 @@ pub struct Config {
     // Optional prover URL
     #[allow(dead_code)]
     pub prover: Option<ProverConfig>,
+    // Optional resilience config
+    #[allow(dead_code)]
+    pub resilience: Option<ResilienceConfig>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ResilienceConfig {
+    #[allow(dead_code)]
+    pub max_retries: Option<u32>,
+    #[allow(dead_code)]
+    pub circuit_breaker_threshold: Option<u32>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -185,5 +196,29 @@ prover:
         let cfg: Config = serde_yaml::from_str(yaml).unwrap();
         assert!(cfg.prover.is_some());
         assert_eq!(cfg.prover.unwrap().url, "http://prover:3000");
+    }
+
+    #[test]
+    fn test_resilience_config() {
+        let yaml = r#"
+network:
+  rpc_url: "http://localhost:8545"
+  chain_id: 123
+contracts:
+  bridge: "0x0000000000000000000000000000000000000001"
+da:
+  mode: "calldata"
+  blob_binding: "mock"
+batch:
+  data_file: "data.txt"
+  new_root: "0x00"
+resilience:
+  max_retries: 10
+  circuit_breaker_threshold: 20
+"#;
+        let cfg: Config = serde_yaml::from_str(yaml).unwrap();
+        let r = cfg.resilience.unwrap();
+        assert_eq!(r.max_retries, Some(10));
+        assert_eq!(r.circuit_breaker_threshold, Some(20));
     }
 }

@@ -1,11 +1,11 @@
 # ZK Rollup Batch Submitter
 
-[![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
-[![Status](https://img.shields.io/badge/Status-Active-success.svg)]()
 [![CI](https://github.com/RollupX-FYP/submitter/actions/workflows/ci.yml/badge.svg)](https://github.com/RollupX-FYP/submitter/actions/workflows/ci.yml)
-[![Coverage](https://github.com/RollupX-FYP/submitter/actions/workflows/coverage.yml/badge.svg)](https://github.com/RollupX-FYP/submitter/actions/workflows/coverage.yml)
 [![Security](https://github.com/RollupX-FYP/submitter/actions/workflows/security.yml/badge.svg)](https://github.com/RollupX-FYP/submitter/actions/workflows/security.yml)
 [![Docker](https://github.com/RollupX-FYP/submitter/actions/workflows/docker-publish.yml/badge.svg)](https://github.com/RollupX-FYP/submitter/actions/workflows/docker-publish.yml)
+[![Codecov](https://codecov.io/gh/RollupX-FYP/submitter/branch/main/graph/badge.svg)](https://codecov.io/gh/RollupX-FYP/submitter)
+[![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
+[![Rust](https://img.shields.io/badge/Rust-1.83+-orange.svg?logo=rust&logoColor=white)](https://www.rust-lang.org)
 [![Proof HTML](https://github.com/RollupX-FYP/submitter/actions/workflows/proof-html.yml/badge.svg)](https://github.com/RollupX-FYP/submitter/actions/workflows/proof-html.yml)
 
 A production-grade, highly reliable Rust service for submitting ZK Rollup batches to Ethereum.
@@ -33,42 +33,23 @@ A production-grade, highly reliable Rust service for submitting ZK Rollup batche
 
 ### Configuration
 
-1.  **Config File:** Create a `submitter.yaml` file (see `submitter.yaml` example in repo).
-2.  **Secrets:** Create a `.env` file for sensitive environment variables (e.g., `SUBMITTER_PRIVATE_KEY`).
-
-### Running the Service
-
-The repository contains two modes of operation:
-
-#### 1. Production Service (Daemon)
-The robust, DDD-compliant service with orchestrator, reliability patterns, and metrics.
-
-```bash
-# Run the long-running service
-cargo run --bin submitter -- --config submitter.yaml
-```
-
-#### 2. Simple Submitter (Script)
-A lightweight script for one-off submissions without the full orchestration overhead.
-
-```bash
-# Run the simple script
-cargo run --bin submitter-rs -- --config submitter.yaml
-```
-
-### Database (For Production Service)
-
-The service supports both SQLite and Postgres.
+Create a `submitter.yaml` file (see `submitter.yaml` example in repo) or pass the path via CLI.
 
 ```bash
 # Run with SQLite (default)
-# Database will be created at submitter.db
-cargo run --bin submitter -- --config submitter.yaml
+cargo run -- --config submitter.yaml
 
 # Run with Postgres
-# Ensure you have a running Postgres instance
 export DATABASE_URL="postgres://user:pass@localhost:5432/db"
-cargo run --bin submitter -- --config submitter.yaml
+cargo run -- --config submitter.yaml
+```
+
+You can configure resilience parameters (retries, circuit breaker) in `submitter.yaml`:
+
+```yaml
+resilience:
+  max_retries: 10             # Default: 5
+  circuit_breaker_threshold: 5 # Default: 5
 ```
 
 ### Metrics

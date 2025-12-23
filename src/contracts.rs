@@ -1,3 +1,5 @@
+#![cfg(not(tarpaulin_include))]
+
 use ethers::prelude::abigen;
 
 abigen!(

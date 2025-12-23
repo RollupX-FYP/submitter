@@ -143,4 +143,10 @@ mod tests {
         batch.transition_to(BatchStatus::Proving);
         assert_eq!(batch.status, BatchStatus::Proving);
     }
+
+    #[test]
+    fn test_batch_id_default() {
+        let id = BatchId::default();
+        assert_ne!(id.to_string(), "");
+    }
 }

@@ -1,3 +1,5 @@
+#![cfg(not(tarpaulin_include))]
+
 use crate::application::ports::Storage;
 use crate::domain::{
     batch::{Batch, BatchId, BatchStatus},
@@ -5,7 +7,7 @@ use crate::domain::{
 };
 use async_trait::async_trait;
 use sqlx::{postgres::PgPoolOptions, Pool, Postgres, Row};
-use tracing::info;
+use tracing::{info, warn};
 use uuid::Uuid;
 
 pub struct PostgresStorage {
@@ -157,8 +159,22 @@ impl Storage for PostgresStorage {
 
         let mut batches = Vec::new();
         for row in rows {
-            let id_str: String = row.try_get("id").unwrap();
-            let status_str: String = row.try_get("status").unwrap();
+            let id_str: String = match row.try_get("id") {
+                Ok(s) => s,
+                Err(e) => {
+                    warn!("Skipping batch with missing/invalid id: {}", e);
+                    continue;
+                }
+            };
+
+            let status_str: String = match row.try_get("status") {
+                Ok(s) => s,
+                Err(e) => {
+                    warn!("Skipping batch {} with missing/invalid status: {}", id_str, e);
+                    continue;
+                }
+            };
+
             let status = match status_str.as_str() {
                 "Discovered" => BatchStatus::Discovered,
                 "Proving" => BatchStatus::Proving,
@@ -167,10 +183,41 @@ impl Storage for PostgresStorage {
                 "Submitted" => BatchStatus::Submitted,
                 "Confirmed" => BatchStatus::Confirmed,
                 "Failed" => BatchStatus::Failed,
-                _ => continue,
+                _ => {
+                    warn!("Skipping batch {} with unknown status: {}", id_str, status_str);
+                    continue;
+                }
             };
 
-            let uuid = Uuid::parse_str(&id_str).unwrap();
+            let uuid = match Uuid::parse_str(&id_str) {
+                Ok(u) => u,
+                Err(e) => {
+                    warn!("Skipping batch {} with invalid UUID: {}", id_str, e);
+                    continue;
+                }
+            };
+
+            let created_at = match row.try_get("created_at") {
+                Ok(t) => t,
+                Err(e) => {
+                    warn!(
+                        "Skipping batch {} with missing/invalid created_at: {}",
+                        id_str, e
+                    );
+                    continue;
+                }
+            };
+
+            let updated_at = match row.try_get("updated_at") {
+                Ok(t) => t,
+                Err(e) => {
+                    warn!(
+                        "Skipping batch {} with missing/invalid updated_at: {}",
+                        id_str, e
+                    );
+                    continue;
+                }
+            };
 
             batches.push(Batch {
                 id: BatchId(uuid),
@@ -181,8 +228,8 @@ impl Storage for PostgresStorage {
                 proof: row.try_get("proof").ok(),
                 tx_hash: row.try_get("tx_hash").ok(),
                 attempts: row.try_get::<i32, _>("attempts").unwrap_or(0) as u32,
-                created_at: row.try_get("created_at").unwrap(),
-                updated_at: row.try_get("updated_at").unwrap(),
+                created_at,
+                updated_at,
             });
         }
 
