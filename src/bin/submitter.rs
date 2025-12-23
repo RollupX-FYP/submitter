@@ -1,30 +1,9 @@
-#![cfg(not(tarpaulin_include))]
-
-use anyhow::{Context, Result};
+use anyhow::Result;
 use clap::Parser;
 use dotenvy::dotenv;
-use ethers::prelude::*;
-use sha1_smol::Sha1;
-use std::fs;
-use std::{path::PathBuf, sync::Arc};
+use std::path::PathBuf;
+use submitter_rs::{infrastructure::observability, startup};
 use tracing::info;
-
-// Import from the library crate
-use submitter_rs::{
-    application::{
-        orchestrator::Orchestrator,
-        ports::{DaStrategy, ProofProvider, Storage},
-    },
-    config::{self, DaMode},
-    contracts::ZKRollupBridge,
-    domain::batch::Batch,
-    infrastructure::{
-        da_blob::BlobStrategy, da_calldata::CalldataStrategy,
-        ethereum_adapter::RealBridgeClient, observability, prover_http::HttpProofProvider,
-        prover_mock::MockProofProvider, storage_postgres::PostgresStorage,
-        storage_sqlite::SqliteStorage,
-    },
-};
 
 #[derive(Parser, Debug)]
 struct Args {
@@ -32,126 +11,32 @@ struct Args {
     config: PathBuf,
 }
 
-#[cfg(not(tarpaulin_include))]
 #[tokio::main]
 async fn main() -> Result<()> {
     dotenv().ok();
 
     // 1. Observability
     observability::init_tracing();
-    let metrics_handle = observability::init_metrics();
-    tokio::spawn(observability::start_metrics_server(metrics_handle));
+    let metrics_handle = observability::init_metrics().expect("failed to install Prometheus recorder");
+    tokio::spawn(observability::start_metrics_server(metrics_handle, 9000));
 
     let args = Args::parse();
-    let cfg = config::load_config(args.config)?;
-
-    // 2. Setup Ethereum Client
-    let pk = std::env::var("SUBMITTER_PRIVATE_KEY")
-        .context("Missing env SUBMITTER_PRIVATE_KEY (DO NOT put private keys in yaml)")?;
-    let wallet: LocalWallet = pk
-        .parse::<LocalWallet>()?
-        .with_chain_id(cfg.network.chain_id);
-    let provider = Provider::<Http>::try_from(cfg.network.rpc_url.as_str())?;
-    let client = Arc::new(SignerMiddleware::new(provider, wallet));
-    let bridge_addr: Address = cfg.contracts.bridge.parse()?;
-    let bridge = ZKRollupBridge::new(bridge_addr, client.clone());
-    let bridge_client = Arc::new(RealBridgeClient::new(bridge));
-
-    // 3. Setup Dependencies
-    // Select storage based on env var, default to sqlite
-    let storage: Arc<dyn Storage> = if let Ok(pg_url) = std::env::var("DATABASE_URL") {
-        if pg_url.starts_with("postgres") {
-            Arc::new(PostgresStorage::new(&pg_url).await?)
-        } else {
-            Arc::new(SqliteStorage::new("sqlite:submitter.db").await?)
+    
+    let shutdown = async {
+        #[cfg(unix)]
+        {
+            let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()).expect("failed to install SIGTERM handler");
+            tokio::select! {
+                _ = tokio::signal::ctrl_c() => { info!("Ctrl-C received"); },
+                _ = sigterm.recv() => { info!("SIGTERM received"); },
+            }
         }
-    } else {
-        Arc::new(SqliteStorage::new("sqlite:submitter.db").await?)
-    };
-
-    // Select prover based on config
-    let prover: Arc<dyn ProofProvider> = if let Some(prover_cfg) = &cfg.prover {
-        info!("Using HTTP Prover at {}", prover_cfg.url);
-        let threshold = cfg
-            .resilience
-            .as_ref()
-            .and_then(|r| r.circuit_breaker_threshold)
-            .unwrap_or(5);
-        Arc::new(HttpProofProvider::new(prover_cfg.url.clone(), threshold))
-    } else {
-        info!("Using Mock Prover");
-        Arc::new(MockProofProvider)
-    };
-
-    // 4. DA Strategy selection
-    let da_strategy: Arc<dyn DaStrategy> = match cfg.da.mode {
-        DaMode::Calldata => Arc::new(CalldataStrategy::new(bridge_client)),
-        DaMode::Blob => {
-            let vh = cfg
-                .batch
-                .blob_versioned_hash
-                .context("blob mode needs batch.blob_versioned_hash")?;
-            let expected: H256 = vh.parse()?;
-            let blob_index = cfg.da.blob_index.unwrap_or(0);
-            let use_opcode = cfg.da.blob_binding == config::BlobBinding::Opcode;
-
-            Arc::new(BlobStrategy::new(
-                bridge_client,
-                expected,
-                blob_index,
-                use_opcode,
-            ))
+        #[cfg(not(unix))]
+        {
+            tokio::signal::ctrl_c().await.expect("failed to install CTRL+C handler");
+            info!("Ctrl-C received");
         }
     };
 
-    // 5. Initial Seed (For demo/testing purposes)
-    let pending = storage.get_pending_batches().await?;
-    if pending.is_empty() {
-        info!("Seeding initial batch from config");
-
-        // Calculate hash of data file for idempotency
-        let data_bytes = fs::read(&cfg.batch.data_file)
-            .context(format!("Failed to read data file {}", cfg.batch.data_file))?;
-        let data_hash = Sha1::from(data_bytes).digest().to_string();
-
-        let batch = Batch::new(
-            cfg.network.chain_id,
-            &cfg.contracts.bridge,
-            cfg.batch.data_file.clone(),
-            data_hash,
-            cfg.batch.new_root.clone(),
-            format!("{:?}", cfg.da.mode),
-        );
-        storage.save_batch(&batch).await?;
-    }
-
-    // 6. Start Orchestrator
-    let max_retries = cfg
-        .resilience
-        .as_ref()
-        .and_then(|r| r.max_retries)
-        .unwrap_or(5);
-    let orchestrator = Orchestrator::new(storage, prover, da_strategy, max_retries);
-
-    // Handle graceful shutdown
-    let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
-
-    tokio::select! {
-        _ = orchestrator.run() => {},
-        _ = tokio::signal::ctrl_c() => { info!("Ctrl-C received, shutting down"); },
-        _ = sigterm.recv() => { info!("SIGTERM received, shutting down"); },
-    }
-
-    Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use clap::CommandFactory;
-
-    #[test]
-    fn verify_cli() {
-        Args::command().debug_assert();
-    }
+    startup::run(args.config, shutdown).await
 }

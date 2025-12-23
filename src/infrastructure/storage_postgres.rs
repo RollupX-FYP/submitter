@@ -1,5 +1,3 @@
-#![cfg(not(tarpaulin_include))]
-
 use crate::application::ports::Storage;
 use crate::domain::{
     batch::{Batch, BatchId, BatchStatus},
@@ -7,7 +5,7 @@ use crate::domain::{
 };
 use async_trait::async_trait;
 use sqlx::{postgres::PgPoolOptions, Pool, Postgres, Row};
-use tracing::{info, warn};
+use tracing::info;
 use uuid::Uuid;
 
 pub struct PostgresStorage {
@@ -162,19 +160,17 @@ impl Storage for PostgresStorage {
             let id_str: String = match row.try_get("id") {
                 Ok(s) => s,
                 Err(e) => {
-                    warn!("Skipping batch with missing/invalid id: {}", e);
+                    tracing::warn!("Skipping row with missing id: {}", e);
                     continue;
                 }
             };
-
             let status_str: String = match row.try_get("status") {
                 Ok(s) => s,
                 Err(e) => {
-                    warn!("Skipping batch {} with missing/invalid status: {}", id_str, e);
+                    tracing::warn!("Skipping row with missing status: {}", e);
                     continue;
                 }
             };
-
             let status = match status_str.as_str() {
                 "Discovered" => BatchStatus::Discovered,
                 "Proving" => BatchStatus::Proving,
@@ -183,8 +179,8 @@ impl Storage for PostgresStorage {
                 "Submitted" => BatchStatus::Submitted,
                 "Confirmed" => BatchStatus::Confirmed,
                 "Failed" => BatchStatus::Failed,
-                _ => {
-                    warn!("Skipping batch {} with unknown status: {}", id_str, status_str);
+                other => {
+                    tracing::warn!("Skipping row with unknown status: {}", other);
                     continue;
                 }
             };
@@ -192,7 +188,7 @@ impl Storage for PostgresStorage {
             let uuid = match Uuid::parse_str(&id_str) {
                 Ok(u) => u,
                 Err(e) => {
-                    warn!("Skipping batch {} with invalid UUID: {}", id_str, e);
+                    tracing::warn!("Skipping row with invalid uuid {}: {}", id_str, e);
                     continue;
                 }
             };
@@ -200,10 +196,7 @@ impl Storage for PostgresStorage {
             let created_at = match row.try_get("created_at") {
                 Ok(t) => t,
                 Err(e) => {
-                    warn!(
-                        "Skipping batch {} with missing/invalid created_at: {}",
-                        id_str, e
-                    );
+                    tracing::warn!("Skipping row with invalid created_at: {}", e);
                     continue;
                 }
             };
@@ -211,10 +204,7 @@ impl Storage for PostgresStorage {
             let updated_at = match row.try_get("updated_at") {
                 Ok(t) => t,
                 Err(e) => {
-                    warn!(
-                        "Skipping batch {} with missing/invalid updated_at: {}",
-                        id_str, e
-                    );
+                    tracing::warn!("Skipping row with invalid updated_at: {}", e);
                     continue;
                 }
             };
@@ -234,5 +224,63 @@ impl Storage for PostgresStorage {
         }
 
         Ok(batches)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::Utc;
+    use std::env;
+
+    fn get_db_url() -> String {
+        env::var("DATABASE_URL").unwrap_or_else(|_| "postgres://postgres:postgres@localhost:5432/postgres".to_string())
+    }
+
+    #[tokio::test]
+    async fn test_postgres_storage_lifecycle() {
+        // Skip if no DB available (rudimentary check)
+        let db_url = get_db_url();
+        if std::net::TcpStream::connect("localhost:5432").is_err() && env::var("CI").is_err() {
+            println!("Skipping postgres test: no db");
+            return;
+        }
+
+        let storage = match PostgresStorage::new(&db_url).await {
+            Ok(s) => s,
+            Err(_) => {
+                println!("Skipping postgres test: connection failed");
+                return;
+            }
+        };
+
+        let batch_id = BatchId(Uuid::new_v4());
+        let batch = Batch {
+            id: batch_id,
+            data_file: "test.dat".to_string(),
+            new_root: "0xroot".to_string(),
+            status: BatchStatus::Discovered,
+            da_mode: "calldata".to_string(),
+            proof: None,
+            tx_hash: None,
+            attempts: 0,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        };
+
+        // Save
+        storage.save_batch(&batch).await.expect("save failed");
+
+        // Get
+        let retrieved = storage.get_batch(batch_id).await.expect("get failed").unwrap();
+        assert_eq!(retrieved.id, batch.id);
+
+        // Update
+        let mut updated_batch = batch.clone();
+        updated_batch.status = BatchStatus::Proving;
+        storage.save_batch(&updated_batch).await.expect("update failed");
+
+        let retrieved_2 = storage.get_batch(batch_id).await.expect("get failed").unwrap();
+        assert_eq!(retrieved_2.status, BatchStatus::Proving);
     }
 }

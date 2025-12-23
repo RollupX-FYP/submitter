@@ -1,11 +1,9 @@
 # ZK Rollup Batch Submitter
 
 [![CI](https://github.com/RollupX-FYP/submitter/actions/workflows/ci.yml/badge.svg)](https://github.com/RollupX-FYP/submitter/actions/workflows/ci.yml)
+[![Coverage](https://github.com/RollupX-FYP/submitter/actions/workflows/coverage.yml/badge.svg)](https://github.com/RollupX-FYP/submitter/actions/workflows/coverage.yml)
 [![Security](https://github.com/RollupX-FYP/submitter/actions/workflows/security.yml/badge.svg)](https://github.com/RollupX-FYP/submitter/actions/workflows/security.yml)
 [![Docker](https://github.com/RollupX-FYP/submitter/actions/workflows/docker-publish.yml/badge.svg)](https://github.com/RollupX-FYP/submitter/actions/workflows/docker-publish.yml)
-[![Codecov](https://codecov.io/gh/RollupX-FYP/submitter/branch/main/graph/badge.svg)](https://codecov.io/gh/RollupX-FYP/submitter)
-[![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
-[![Rust](https://img.shields.io/badge/Rust-1.83+-orange.svg?logo=rust&logoColor=white)](https://www.rust-lang.org)
 [![Proof HTML](https://github.com/RollupX-FYP/submitter/actions/workflows/proof-html.yml/badge.svg)](https://github.com/RollupX-FYP/submitter/actions/workflows/proof-html.yml)
 
 A production-grade, highly reliable Rust service for submitting ZK Rollup batches to Ethereum.
@@ -44,14 +42,6 @@ export DATABASE_URL="postgres://user:pass@localhost:5432/db"
 cargo run -- --config submitter.yaml
 ```
 
-You can configure resilience parameters (retries, circuit breaker) in `submitter.yaml`:
-
-```yaml
-resilience:
-  max_retries: 10             # Default: 5
-  circuit_breaker_threshold: 5 # Default: 5
-```
-
 ### Metrics
 
 The service exposes Prometheus metrics on port `9000` by default.
@@ -61,11 +51,16 @@ The service exposes Prometheus metrics on port `9000` by default.
 ## Testing
 
 ```bash
-# Run unit and integration tests (SQLite)
+# Run all tests (Unit + Integration) - Targets 100% coverage
 cargo test
 
-# Run integration tests with Postgres
-docker compose up -d postgres
-export DATABASE_URL="postgres://postgres:postgres@localhost:5432/submitter"
-cargo test --test integration_test
+# Run integration tests specifically
+cargo test --test lifecycle
+cargo test --test startup
+cargo test --test cli
+
+# Run with Postgres (Optional, CI does this automatically)
+# Requires Docker running on localhost:5432
+export DATABASE_URL="postgres://postgres:password@localhost:5432/submitter"
+cargo test --lib infrastructure::storage_postgres
 ```

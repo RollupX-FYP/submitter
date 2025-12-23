@@ -1,5 +1,4 @@
-#![cfg(not(tarpaulin_include))]
-
+use anyhow::Result;
 use axum::{routing::get, Router};
 use metrics_exporter_prometheus::{PrometheusBuilder, PrometheusHandle};
 use std::net::SocketAddr;
@@ -9,30 +8,31 @@ use tracing::info;
 pub fn init_tracing() {
     // Check for JSON log format request
     let use_json = std::env::var("LOG_JSON").unwrap_or_else(|_| "true".to_string()) == "true";
+    let filter = tracing_subscriber::EnvFilter::from_default_env();
 
     if use_json {
-        tracing_subscriber::fmt()
-            .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        let _ = tracing_subscriber::fmt()
+            .with_env_filter(filter)
             .json()
-            .init();
+            .try_init();
     } else {
-        tracing_subscriber::fmt()
-            .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
-            .init();
+        let _ = tracing_subscriber::fmt()
+            .with_env_filter(filter)
+            .try_init();
     }
 }
 
-pub fn init_metrics() -> PrometheusHandle {
+pub fn init_metrics() -> Result<PrometheusHandle> {
     let builder = PrometheusBuilder::new();
     builder
         .install_recorder()
-        .expect("failed to install Prometheus recorder")
+        .map_err(|e| anyhow::anyhow!("Failed to install recorder: {:?}", e))
 }
 
-pub async fn start_metrics_server(handle: PrometheusHandle) {
+pub async fn start_metrics_server(handle: PrometheusHandle, port: u16) {
     let app = Router::new().route("/metrics", get(move || std::future::ready(handle.render())));
 
-    let addr = SocketAddr::from(([0, 0, 0, 0], 9000));
+    let addr = SocketAddr::from(([0, 0, 0, 0], port));
     info!("Metrics server listening on {}", addr);
 
     let listener = TcpListener::bind(addr)
@@ -41,4 +41,20 @@ pub async fn start_metrics_server(handle: PrometheusHandle) {
     axum::serve(listener, app)
         .await
         .expect("failed to start metrics server");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_init_tracing_safe() {
+        init_tracing();
+        init_tracing();
+    }
+
+    #[test]
+    fn test_init_metrics_safe() {
+        let _ = init_metrics();
+    }
 }

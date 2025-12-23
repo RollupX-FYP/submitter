@@ -26,8 +26,8 @@ The codebase is organized into four distinct layers:
     *   `da_calldata.rs`, `da_blob.rs` (Blockchain Interaction)
 
 ### `src/bin/` (Entry Point)
-*   **Wiring:** responsible *only* for parsing config, initializing adapters, and starting the orchestrator.
-*   **No Logic:** No business logic should exist here.
+*   **Wiring:** Thin wrappers around `src/startup.rs` (daemon) and `src/script.rs` (script).
+*   **Testability:** Logic is moved to library modules to enable integration testing of the entry point logic.
 
 ---
 
@@ -45,8 +45,7 @@ The codebase is organized into four distinct layers:
 ### Circuit Breaker & Retry
 *   **Prover Service:** The `HttpProofProvider` uses a Circuit Breaker (Closed -> Open -> HalfOpen) to prevent hammering a failing service.
 *   **Exponential Backoff:** Retries use exponential backoff for transient errors.
- *   **Dead Letter:** Batches exceeding `max_attempts` (configurable) are moved to `Failed` status to prevent infinite loops.
- *   **Configurability:** Circuit breaker thresholds and retry limits are defined in the `resilience` config.
+*   **Dead Letter:** Batches exceeding `max_attempts` are moved to `Failed` status to prevent infinite loops.
 
 ### Safety
 *   **Confirmation:** Transactions are considered confirmed only if `receipt.status == 1` AND (optionally) `confirmations >= N`.
@@ -61,6 +60,11 @@ The codebase is organized into four distinct layers:
 
 ## 4. Testing Standards
 
-*   **Unit Tests:** Test Domain logic and Config parsing.
-*   **Integration Tests:** Use `sqlite::memory:` to test the full lifecycle of the Orchestrator without mocking the DB.
-*   **Mocking:** Use Traits (`DaStrategy`, `ProofProvider`) to mock external dependencies in tests.
+*   **Unit Tests:** Test Domain logic and Config parsing. Use `sqlite::memory:` for storage adapter unit tests.
+*   **Integration Tests:**
+    *   `tests/lifecycle.rs`: Tests the `Orchestrator` loop using mocks for external services.
+    *   `tests/startup.rs`: Tests the full application startup, wiring, and shutdown using `startup::run` and `wiremock`.
+    *   `tests/cli.rs`: Tests the binary entry points using `assert_cmd`.
+*   **Mocking:**
+    *   Use Traits (`DaStrategy`, `ProofProvider`) to mock external dependencies in application layer tests.
+    *   Use `crate::test_utils::MockClient` to mock `ethers` JSON-RPC responses in infrastructure adapters (`DaStrategy`, `Submitter`) to verify correct call sequences (e.g. `eth_feeHistory`, `eth_estimateGas`) and error handling.

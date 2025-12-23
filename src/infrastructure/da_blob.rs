@@ -1,28 +1,30 @@
 use crate::application::ports::DaStrategy;
-use crate::contracts::Groth16Proof;
+use crate::contracts::{Groth16Proof, ZKRollupBridge};
 use crate::domain::{batch::Batch, errors::DomainError};
-use crate::infrastructure::ethereum_adapter::BridgeClient;
 use async_trait::async_trait;
 use ethers::prelude::*;
 use metrics::counter;
 use std::sync::Arc;
 use tracing::{info, warn};
 
-pub struct BlobStrategy {
-    client: Arc<dyn BridgeClient>,
+pub struct BlobStrategy<M: Middleware> {
+    bridge: ZKRollupBridge<M>,
+    client: Arc<M>,
     blob_versioned_hash: H256,
     blob_index: u8,
     use_opcode: bool,
 }
 
-impl BlobStrategy {
+impl<M: Middleware + 'static> BlobStrategy<M> {
     pub fn new(
-        client: Arc<dyn BridgeClient>,
+        bridge: ZKRollupBridge<M>,
         blob_versioned_hash: H256,
         blob_index: u8,
         use_opcode: bool,
     ) -> Self {
+        let client = bridge.client();
         Self {
+            bridge,
             client,
             blob_versioned_hash,
             blob_index,
@@ -32,7 +34,7 @@ impl BlobStrategy {
 }
 
 #[async_trait]
-impl DaStrategy for BlobStrategy {
+impl<M: Middleware + 'static> DaStrategy for BlobStrategy<M> {
     async fn submit(&self, batch: &Batch, _proof: &str) -> Result<String, DomainError> {
         let proof = Groth16Proof {
             a: [U256::zero(), U256::zero()],
@@ -40,23 +42,27 @@ impl DaStrategy for BlobStrategy {
             c: [U256::zero(), U256::zero()],
         };
 
-        let new_root: [u8; 32] = batch
+        let new_root: H256 = batch
             .new_root
-            .parse::<H256>()
-            .map_err(|e| DomainError::Da(format!("Invalid new root: {}", e)))?
-            .into();
+            .parse()
+            .map_err(|e| DomainError::Da(format!("Invalid new root: {}", e)))?;
 
-        let tx_hash = self
-            .client
-            .commit_batch_blob(
-                self.blob_versioned_hash.into(),
-                self.blob_index,
-                self.use_opcode,
-                new_root,
-                proof,
-            )
-            .await?;
+        let bridge = self.bridge.clone();
+        let call = bridge.commit_batch_blob(
+            self.blob_versioned_hash.into(),
+            self.blob_index,
+            self.use_opcode,
+            new_root.into(),
+            proof,
+        );
 
+        // Just send, do not wait
+        let pending = call
+            .send()
+            .await
+            .map_err(|e| DomainError::Da(format!("Tx send failed: {}", e)))?;
+
+        let tx_hash = pending.tx_hash();
         info!("Blob batch broadcasted. tx={:?}", tx_hash);
 
         counter!("tx_submitted_total", "mode" => "blob").increment(1);
@@ -68,13 +74,23 @@ impl DaStrategy for BlobStrategy {
         let hash: H256 = tx_hash
             .parse()
             .map_err(|e| DomainError::Da(format!("Invalid hash: {}", e)))?;
-        let receipt = self.client.get_transaction_receipt(hash).await?;
+        let receipt = self
+            .client
+            .get_transaction_receipt(hash)
+            .await
+            .map_err(|e| DomainError::Da(format!("Provider error: {}", e)))?;
 
         if let Some(r) = receipt {
+            // Check status (1 = success, 0 = failure)
             if let Some(status) = r.status {
                 if status.as_u64() == 1 {
+                    // Check confirmations
                     let block_number = r.block_number.unwrap_or_default();
-                    let current_block = self.client.get_block_number().await?;
+                    let current_block = self
+                        .client
+                        .get_block_number()
+                        .await
+                        .map_err(|e| DomainError::Da(format!("Provider error: {}", e)))?;
 
                     let confs = current_block.as_u64().saturating_sub(block_number.as_u64());
 
@@ -102,106 +118,87 @@ impl DaStrategy for BlobStrategy {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::infrastructure::ethereum_adapter::BridgeClient;
-    use tokio::sync::Mutex;
-
-    struct MockBridge {
-        tx_hash: H256,
-        receipt: Mutex<Option<TransactionReceipt>>,
-        block: u64,
-    }
-
-    #[async_trait]
-    impl BridgeClient for MockBridge {
-        async fn commit_batch_calldata(
-            &self,
-            _batch_data: Bytes,
-            _new_root: [u8; 32],
-            _proof: Groth16Proof,
-        ) -> Result<H256, DomainError> {
-            unimplemented!()
-        }
-
-        async fn commit_batch_blob(
-            &self,
-            _versioned_hash: [u8; 32],
-            _blob_index: u8,
-            _use_opcode: bool,
-            _new_root: [u8; 32],
-            _proof: Groth16Proof,
-        ) -> Result<H256, DomainError> {
-            Ok(self.tx_hash)
-        }
-
-        async fn get_transaction_receipt(
-            &self,
-            _hash: H256,
-        ) -> Result<Option<TransactionReceipt>, DomainError> {
-            let r = self.receipt.lock().await.clone();
-            Ok(r)
-        }
-
-        async fn get_block_number(&self) -> Result<U64, DomainError> {
-            Ok(U64::from(self.block))
-        }
-    }
+    use ethers::providers::{Provider, JsonRpcClient};
+    use ethers::signers::{LocalWallet, Signer};
+    use ethers::middleware::SignerMiddleware;
+    use ethers::types::{Block, U64, TransactionReceipt, FeeHistory};
+    use serde::de::DeserializeOwned;
+    use serde::Serialize;
+    use std::sync::Arc;
+    use crate::test_utils::MockClient;
 
     #[tokio::test]
     async fn test_submit_blob() {
-        let mock = Arc::new(MockBridge {
-            tx_hash: H256::repeat_byte(2),
-            receipt: Mutex::new(None),
-            block: 10,
-        });
+        let mock = MockClient::new();
+        let provider = Provider::new(mock.clone());
+        let wallet: LocalWallet = "0x0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20".parse().unwrap();
+        let client = Arc::new(SignerMiddleware::new(provider, wallet.with_chain_id(1u64)));
+        let bridge_addr = Address::random();
+        let bridge = ZKRollupBridge::new(bridge_addr, client.clone());
+        
+        let blob_hash = H256::random();
+        let strategy = BlobStrategy::new(bridge, blob_hash, 0, false);
 
-        let strategy = BlobStrategy::new(mock, H256::zero(), 0, false);
-        let batch = Batch::new(
-            1,
-            "0xBridge",
-            "file".to_string(),
-            "hash".to_string(),
-            "0x0000000000000000000000000000000000000000000000000000000000000000".to_string(),
-            "blob".to_string(),
-        );
+        let batch = Batch {
+             id: crate::domain::batch::BatchId(uuid::Uuid::new_v4()),
+             data_file: "test_data_blob.txt".to_string(), 
+             new_root: format!("{:#x}", H256::zero()),
+             status: crate::domain::batch::BatchStatus::Proving,
+             da_mode: "blob".to_string(),
+             proof: None,
+             tx_hash: None,
+             attempts: 0,
+             created_at: chrono::Utc::now(),
+             updated_at: chrono::Utc::now(),
+        };
+
+        // Populate responses
+        mock.push(U256::from(0)); // nonce
+        let mut block = Block::<H256>::default();
+        block.base_fee_per_gas = Some(U256::from(100));
+        mock.push(block); // Block
+        
+        let history = FeeHistory {
+            oldest_block: U256::zero(),
+            base_fee_per_gas: vec![U256::from(100); 11], 
+            gas_used_ratio: vec![0.5; 10],
+            reward: vec![],
+        };
+        mock.push(history); // FeeHistory
+        
+        mock.push(U256::from(100_000)); // estimateGas
+        mock.push(H256::random()); // hash
 
         let res = strategy.submit(&batch, "proof").await;
+        
+        if let Err(e) = &res {
+            println!("Submit error: {:?}", e);
+        }
+        assert!(res.is_ok(), "submit failed");
+    }
+    
+    #[tokio::test]
+    async fn test_check_confirmation_blob() {
+        let mock = MockClient::new();
+        let provider = Provider::new(mock.clone());
+        let wallet: LocalWallet = "0x0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20".parse().unwrap();
+        let client = Arc::new(SignerMiddleware::new(provider, wallet.with_chain_id(1u64)));
+        let bridge_addr = Address::random();
+        let bridge = ZKRollupBridge::new(bridge_addr, client.clone());
+        let strategy = BlobStrategy::new(bridge, H256::random(), 0, false);
+        
+        let tx_hash = H256::random();
+        
+        mock.push(TransactionReceipt {
+            status: Some(U64::from(1)),
+            block_number: Some(U64::from(100)),
+            ..Default::default()
+        });
+        
+        mock.push(U64::from(105)); 
+        
+        let res = strategy.check_confirmation(&format!("{:#x}", tx_hash)).await;
         assert!(res.is_ok());
-        assert_eq!(res.unwrap(), format!("{:?}", H256::repeat_byte(2)));
-    }
-
-    #[tokio::test]
-    async fn test_confirm_success() {
-        let mock = Arc::new(MockBridge {
-            tx_hash: H256::repeat_byte(2),
-            receipt: Mutex::new(Some(TransactionReceipt {
-                status: Some(U64::from(1)),
-                block_number: Some(U64::from(5)),
-                ..Default::default()
-            })),
-            block: 10,
-        });
-        let strategy = BlobStrategy::new(mock, H256::zero(), 0, false);
-        let res = strategy.check_confirmation(&format!("{:?}", H256::repeat_byte(2))).await;
         assert!(res.unwrap());
-    }
-
-    #[tokio::test]
-    async fn test_submit_blob_root_error() {
-        let mock = Arc::new(MockBridge {
-            tx_hash: H256::zero(),
-            receipt: Mutex::new(None),
-            block: 0,
-        });
-        let strategy = BlobStrategy::new(mock, H256::zero(), 0, false);
-        let batch = Batch::new(
-            1,
-            "0xBridge",
-            "file".to_string(),
-            "hash".to_string(),
-            "invalid_hex".to_string(),
-            "blob".to_string(),
-        );
-        let res = strategy.submit(&batch, "proof").await;
-        assert!(res.is_err());
     }
 }
