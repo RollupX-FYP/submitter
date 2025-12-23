@@ -46,7 +46,12 @@ pub async fn build(config_path: PathBuf) -> Result<(AppStorage, AppOrchestrator)
 
     let prover: Arc<dyn ProofProvider> = if let Some(prover_cfg) = &cfg.prover {
         info!("Using HTTP Prover at {}", prover_cfg.url);
-        Arc::new(HttpProofProvider::new(prover_cfg.url.clone()))
+        let threshold = cfg
+            .resilience
+            .as_ref()
+            .and_then(|r| r.circuit_breaker_threshold)
+            .unwrap_or(5);
+        Arc::new(HttpProofProvider::new(prover_cfg.url.clone(), threshold))
     } else {
         info!("Using Mock Prover");
         Arc::new(MockProofProvider)
@@ -87,7 +92,13 @@ pub async fn build(config_path: PathBuf) -> Result<(AppStorage, AppOrchestrator)
         storage.save_batch(&batch).await?;
     }
 
-    let orchestrator = Orchestrator::new(storage.clone(), prover, da_strategy);
+    let max_attempts = cfg
+        .resilience
+        .as_ref()
+        .and_then(|r| r.max_retries)
+        .unwrap_or(5);
+
+    let orchestrator = Orchestrator::new(storage.clone(), prover, da_strategy, max_attempts);
     Ok((storage, orchestrator))
 }
 

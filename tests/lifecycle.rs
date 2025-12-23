@@ -73,7 +73,7 @@ async fn test_batch_lifecycle() {
     // 2. Setup Components
     let prover = Arc::new(TestProofProvider);
     let da = Arc::new(MockDaStrategy::new());
-    let orchestrator = Orchestrator::new(storage.clone(), prover, da);
+    let orchestrator = Orchestrator::new(storage.clone(), prover, da, 5);
 
     // 3. Create a batch
     let batch = Batch::new(
