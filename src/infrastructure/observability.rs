@@ -1,3 +1,5 @@
+#![cfg(not(tarpaulin_include))]
+
 use axum::{routing::get, Router};
 use metrics_exporter_prometheus::{PrometheusBuilder, PrometheusHandle};
 use std::net::SocketAddr;

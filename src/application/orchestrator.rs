@@ -20,12 +20,13 @@ impl Orchestrator {
         storage: Arc<dyn Storage>,
         prover: Arc<dyn ProofProvider>,
         da_strategy: Arc<dyn DaStrategy>,
+        max_attempts: u32,
     ) -> Self {
         Self {
             storage,
             prover,
             da_strategy,
-            max_attempts: 5,
+            max_attempts,
         }
     }
 
@@ -73,8 +74,9 @@ impl Orchestrator {
         self.storage.save_batch(batch).await
     }
 
+    #[tracing::instrument(skip(self, batch), fields(batch_id = %batch.id, status = %batch.status))]
     async fn process_batch(&self, batch: &mut Batch) -> Result<(), DomainError> {
-        info!("Processing batch {} in status {}", batch.id, batch.status);
+        info!("Processing batch");
         let start = Instant::now();
 
         match batch.status {
@@ -264,7 +266,10 @@ mod tests {
             confirm_result: true,
         });
 
-        (Orchestrator::new(storage.clone(), prover, da), storage)
+        (
+            Orchestrator::new(storage.clone(), prover, da, 5),
+            storage,
+        )
     }
 
     #[tokio::test]

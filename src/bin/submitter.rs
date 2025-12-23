@@ -1,3 +1,5 @@
+#![cfg(not(tarpaulin_include))]
+
 use anyhow::{Context, Result};
 use clap::Parser;
 use dotenvy::dotenv;
@@ -17,9 +19,10 @@ use submitter_rs::{
     contracts::ZKRollupBridge,
     domain::batch::Batch,
     infrastructure::{
-        da_blob::BlobStrategy, da_calldata::CalldataStrategy, observability,
-        prover_http::HttpProofProvider, prover_mock::MockProofProvider,
-        storage_postgres::PostgresStorage, storage_sqlite::SqliteStorage,
+        da_blob::BlobStrategy, da_calldata::CalldataStrategy,
+        ethereum_adapter::RealBridgeClient, observability, prover_http::HttpProofProvider,
+        prover_mock::MockProofProvider, storage_postgres::PostgresStorage,
+        storage_sqlite::SqliteStorage,
     },
 };
 
@@ -29,6 +32,7 @@ struct Args {
     config: PathBuf,
 }
 
+#[cfg(not(tarpaulin_include))]
 #[tokio::main]
 async fn main() -> Result<()> {
     dotenv().ok();
@@ -51,6 +55,7 @@ async fn main() -> Result<()> {
     let client = Arc::new(SignerMiddleware::new(provider, wallet));
     let bridge_addr: Address = cfg.contracts.bridge.parse()?;
     let bridge = ZKRollupBridge::new(bridge_addr, client.clone());
+    let bridge_client = Arc::new(RealBridgeClient::new(bridge));
 
     // 3. Setup Dependencies
     // Select storage based on env var, default to sqlite
@@ -67,7 +72,12 @@ async fn main() -> Result<()> {
     // Select prover based on config
     let prover: Arc<dyn ProofProvider> = if let Some(prover_cfg) = &cfg.prover {
         info!("Using HTTP Prover at {}", prover_cfg.url);
-        Arc::new(HttpProofProvider::new(prover_cfg.url.clone()))
+        let threshold = cfg
+            .resilience
+            .as_ref()
+            .and_then(|r| r.circuit_breaker_threshold)
+            .unwrap_or(5);
+        Arc::new(HttpProofProvider::new(prover_cfg.url.clone(), threshold))
     } else {
         info!("Using Mock Prover");
         Arc::new(MockProofProvider)
@@ -75,7 +85,7 @@ async fn main() -> Result<()> {
 
     // 4. DA Strategy selection
     let da_strategy: Arc<dyn DaStrategy> = match cfg.da.mode {
-        DaMode::Calldata => Arc::new(CalldataStrategy::new(bridge)),
+        DaMode::Calldata => Arc::new(CalldataStrategy::new(bridge_client)),
         DaMode::Blob => {
             let vh = cfg
                 .batch
@@ -85,7 +95,12 @@ async fn main() -> Result<()> {
             let blob_index = cfg.da.blob_index.unwrap_or(0);
             let use_opcode = cfg.da.blob_binding == config::BlobBinding::Opcode;
 
-            Arc::new(BlobStrategy::new(bridge, expected, blob_index, use_opcode))
+            Arc::new(BlobStrategy::new(
+                bridge_client,
+                expected,
+                blob_index,
+                use_opcode,
+            ))
         }
     };
 
@@ -111,7 +126,12 @@ async fn main() -> Result<()> {
     }
 
     // 6. Start Orchestrator
-    let orchestrator = Orchestrator::new(storage, prover, da_strategy);
+    let max_retries = cfg
+        .resilience
+        .as_ref()
+        .and_then(|r| r.max_retries)
+        .unwrap_or(5);
+    let orchestrator = Orchestrator::new(storage, prover, da_strategy, max_retries);
 
     // Handle graceful shutdown
     let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
@@ -123,4 +143,15 @@ async fn main() -> Result<()> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::CommandFactory;
+
+    #[test]
+    fn verify_cli() {
+        Args::command().debug_assert();
+    }
 }

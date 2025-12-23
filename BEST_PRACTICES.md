@@ -45,7 +45,8 @@ The codebase is organized into four distinct layers:
 ### Circuit Breaker & Retry
 *   **Prover Service:** The `HttpProofProvider` uses a Circuit Breaker (Closed -> Open -> HalfOpen) to prevent hammering a failing service.
 *   **Exponential Backoff:** Retries use exponential backoff for transient errors.
-*   **Dead Letter:** Batches exceeding `max_attempts` are moved to `Failed` status to prevent infinite loops.
+ *   **Dead Letter:** Batches exceeding `max_attempts` (configurable) are moved to `Failed` status to prevent infinite loops.
+ *   **Configurability:** Circuit breaker thresholds and retry limits are defined in the `resilience` config.
 
 ### Safety
 *   **Confirmation:** Transactions are considered confirmed only if `receipt.status == 1` AND (optionally) `confirmations >= N`.

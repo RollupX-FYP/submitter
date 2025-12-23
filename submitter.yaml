@@ -16,3 +16,7 @@ batch:
 
   # Only used when da.mode="blob"
   blob_versioned_hash: "0x2222222222222222222222222222222222222222222222222222222222222222"
+
+resilience:
+  max_retries: 5
+  circuit_breaker_threshold: 5
