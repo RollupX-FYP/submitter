@@ -17,9 +17,15 @@ impl<M: Middleware + 'static> Submitter<M> {
         new_root: [u8; 32],
         proof: Groth16Proof,
     ) -> Result<H256> {
-        // Break down the chain to manage lifetimes
+        // Calldata strategy: daId = 0, daMeta = empty
         let bridge = self.bridge.clone();
-        let call = bridge.commit_batch_calldata(batch_data.into(), new_root, proof);
+        let call = bridge.commit_batch(
+            0,
+            batch_data.into(),
+            Bytes::new(),
+            new_root,
+            proof,
+        );
         let pending = call.send().await?;
 
         let receipt = pending.await?.context("tx dropped")?;
@@ -30,15 +36,25 @@ impl<M: Middleware + 'static> Submitter<M> {
         &self,
         expected_versioned_hash: [u8; 32],
         blob_index: u8,
-        use_opcode: bool,
+        _use_opcode: bool, // Deprecated
         new_root: [u8; 32],
         proof: Groth16Proof,
     ) -> Result<H256> {
+        // Blob strategy: daId = 1, daMeta = abi.encode(versionedHash, blobIndex)
+        // Note: Submitter struct is for manual submission or older paths. 
+        // We need to encode metadata here manually as we don't have the Batch/Strategy abstraction here.
+        
+        let versioned_hash = H256::from(expected_versioned_hash);
+        let da_meta = ethers::abi::encode(&[
+            ethers::abi::Token::FixedBytes(versioned_hash.as_bytes().to_vec()),
+            ethers::abi::Token::Uint(U256::from(blob_index)),
+        ]);
+
         let bridge = self.bridge.clone();
-        let call = bridge.commit_batch_blob(
-            expected_versioned_hash,
-            blob_index,
-            use_opcode,
+        let call = bridge.commit_batch(
+            1,
+            Bytes::new(), // batchData empty for blob
+            da_meta.into(),
             new_root,
             proof,
         );

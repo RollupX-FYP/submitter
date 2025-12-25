@@ -1,15 +1,16 @@
 use crate::{
     application::{
         orchestrator::Orchestrator,
-        ports::{DaStrategy, ProofProvider, Storage},
+        ports::{BridgeReader, DaStrategy, ProofProvider, Storage},
     },
     config::{self, DaMode},
     contracts::ZKRollupBridge,
     domain::batch::Batch,
     infrastructure::{
         da_blob::BlobStrategy, da_calldata::CalldataStrategy,
-        prover_http::HttpProofProvider, prover_mock::MockProofProvider,
-        storage_postgres::PostgresStorage, storage_sqlite::SqliteStorage,
+        ethereum_adapter::RealBridgeClient, prover_http::HttpProofProvider,
+        prover_mock::MockProofProvider, storage_postgres::PostgresStorage,
+        storage_sqlite::SqliteStorage,
     },
 };
 use anyhow::{Context, Result};
@@ -33,6 +34,8 @@ pub async fn build(config_path: PathBuf) -> Result<(AppStorage, AppOrchestrator)
     let client = Arc::new(SignerMiddleware::new(provider, wallet));
     let bridge_addr: Address = cfg.contracts.bridge.parse()?;
     let bridge = ZKRollupBridge::new(bridge_addr, client.clone());
+
+    let bridge_reader: Arc<dyn BridgeReader> = Arc::new(RealBridgeClient::new(bridge.clone()));
 
     let storage: Arc<dyn Storage> = if let Ok(pg_url) = std::env::var("DATABASE_URL") {
         if pg_url.starts_with("postgres") {
@@ -69,7 +72,9 @@ pub async fn build(config_path: PathBuf) -> Result<(AppStorage, AppOrchestrator)
             let blob_index = cfg.da.blob_index.unwrap_or(0);
             let use_opcode = cfg.da.blob_binding == config::BlobBinding::Opcode;
 
-            Arc::new(BlobStrategy::new(bridge, expected, blob_index, use_opcode))
+            Arc::new(BlobStrategy::new(
+                bridge, expected, blob_index, use_opcode,
+            ))
         }
     };
 
@@ -98,13 +103,22 @@ pub async fn build(config_path: PathBuf) -> Result<(AppStorage, AppOrchestrator)
         .and_then(|r| r.max_retries)
         .unwrap_or(5);
 
-    let orchestrator = Orchestrator::new(storage.clone(), prover, da_strategy, max_attempts);
+    let orchestrator = Orchestrator::new(
+        storage.clone(),
+        prover,
+        da_strategy,
+        bridge_reader,
+        max_attempts,
+    );
     Ok((storage, orchestrator))
 }
 
 use std::future::Future;
 
-pub async fn run(config_path: PathBuf, shutdown: impl Future<Output = ()> + Send + 'static) -> Result<()> {
+pub async fn run(
+    config_path: PathBuf,
+    shutdown: impl Future<Output = ()> + Send + 'static,
+) -> Result<()> {
     let (_, orchestrator) = build(config_path).await?;
 
     tokio::select! {
@@ -124,7 +138,9 @@ mod tests {
     #[tokio::test]
     async fn test_startup_missing_env() {
         let mut config_file = NamedTempFile::new().unwrap();
-        write!(config_file, "
+        write!(
+            config_file,
+            "
 network:
   rpc_url: http://localhost:8545
   chain_id: 1337
@@ -137,7 +153,9 @@ batch:
 da:
   mode: calldata
   blob_binding: opcode
-        ").unwrap();
+        "
+        )
+        .unwrap();
 
         std::env::remove_var("SUBMITTER_PRIVATE_KEY");
 
@@ -148,13 +166,19 @@ da:
         }
         assert!(res.is_err());
         let err_msg = res.unwrap_err().to_string();
-        assert!(err_msg.contains("Missing env SUBMITTER_PRIVATE_KEY"), "Unexpected error: {}", err_msg);
+        assert!(
+            err_msg.contains("Missing env SUBMITTER_PRIVATE_KEY"),
+            "Unexpected error: {}",
+            err_msg
+        );
     }
 
     #[tokio::test]
     async fn test_build_blob_config() {
         let mut config_file = NamedTempFile::new().unwrap();
-        write!(config_file, "
+        write!(
+            config_file,
+            "
 network:
   rpc_url: http://localhost:8545
   chain_id: 1337
@@ -167,16 +191,21 @@ batch:
 da:
   mode: blob
   blob_binding: opcode
-        ").unwrap();
+        "
+        )
+        .unwrap();
 
-        std::env::set_var("SUBMITTER_PRIVATE_KEY", "0x0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20");
+        std::env::set_var(
+            "SUBMITTER_PRIVATE_KEY",
+            "0x0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20",
+        );
         std::env::set_var("DATABASE_URL", "sqlite::memory:");
-        
+
         std::fs::write("data_blob.txt", "dummy").unwrap();
 
         let res = build(config_file.path().to_path_buf()).await;
         assert!(res.is_ok());
-        
+
         let _ = std::fs::remove_file("data_blob.txt");
     }
 }

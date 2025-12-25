@@ -70,6 +70,8 @@ pub struct Batch {
     pub attempts: u32,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+    pub blob_versioned_hash: Option<String>,
+    pub blob_index: Option<u8>,
 }
 
 impl Batch {
@@ -93,6 +95,8 @@ impl Batch {
             attempts: 0,
             created_at: now,
             updated_at: now,
+            blob_versioned_hash: None,
+            blob_index: None,
         }
     }
 

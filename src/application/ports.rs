@@ -3,7 +3,15 @@ use crate::domain::{
     errors::DomainError,
 };
 use async_trait::async_trait;
+use ethers::types::H256;
 use serde::{Deserialize, Serialize};
+
+#[cfg_attr(test, mockall::automock)]
+#[async_trait]
+pub trait BridgeReader: Send + Sync {
+    /// Fetches the current state root from the L1 ZKRollupBridge contract.
+    async fn state_root(&self) -> Result<H256, DomainError>;
+}
 
 #[async_trait]
 pub trait Storage: Send + Sync {
@@ -28,6 +36,19 @@ pub trait ProofProvider: Send + Sync {
 
 #[async_trait]
 pub trait DaStrategy: Send + Sync {
+    /// Returns the DA ID required by the contract (0 = Calldata, 1 = Blob).
+    fn da_id(&self) -> u8;
+
+    /// Computes the commitment to be used as a Public Input.
+    /// Calldata: keccak256(batch.data)
+    /// Blob: batch.blob_versioned_hash
+    fn compute_commitment(&self, batch: &Batch) -> Result<H256, DomainError>;
+
+    /// Encodes the 'daMeta' bytes for the transaction.
+    /// Calldata: empty bytes
+    /// Blob: abi.encode(versioned_hash, blob_index)
+    fn encode_da_meta(&self, batch: &Batch) -> Result<Vec<u8>, DomainError>;
+
     /// Broadcasts the transaction and returns the hash immediately.
     async fn submit(&self, batch: &Batch, proof: &str) -> Result<String, DomainError>;
 

@@ -1,17 +1,28 @@
-use crate::application::ports::{DaStrategy, ProofProvider, Storage};
+use crate::application::ports::{BridgeReader, DaStrategy, ProofProvider, Storage};
 use crate::domain::{
     batch::{Batch, BatchStatus},
     errors::DomainError,
 };
+use ethers::types::{H256, U256};
 use metrics::{counter, histogram};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tracing::{error, info, warn};
 
+// BN254 Scalar Field Modulus
+// 21888242871839275222246405745257275088548364400416034343698204186575808495617
+const SNARK_SCALAR_FIELD: U256 = U256([
+    0x43e1f593f0000001,
+    0x2833e84879b97091,
+    0xb85045b68181585d,
+    0x30644e72e131a029,
+]);
+
 pub struct Orchestrator {
     storage: Arc<dyn Storage>,
     prover: Arc<dyn ProofProvider>,
     da_strategy: Arc<dyn DaStrategy>,
+    bridge_reader: Arc<dyn BridgeReader>,
     max_attempts: u32,
 }
 
@@ -20,12 +31,14 @@ impl Orchestrator {
         storage: Arc<dyn Storage>,
         prover: Arc<dyn ProofProvider>,
         da_strategy: Arc<dyn DaStrategy>,
+        bridge_reader: Arc<dyn BridgeReader>,
         max_attempts: u32,
     ) -> Self {
         Self {
             storage,
             prover,
             da_strategy,
+            bridge_reader,
             max_attempts,
         }
     }
@@ -86,21 +99,64 @@ impl Orchestrator {
                 counter!("batch_transitions_total", "from" => "Discovered", "to" => "Proving")
                     .increment(1);
             }
-            BatchStatus::Proving => match self.prover.get_proof(&batch.id, &[]).await {
-                Ok(response) => {
-                    batch.proof = Some(response.proof);
-                    batch.transition_to(BatchStatus::Proved);
-                    batch.attempts = 0;
-                    self.storage.save_batch(batch).await?;
+            BatchStatus::Proving => {
+                // 1. Fetch L1 Context (BridgeReader)
+                let old_root_res = self.bridge_reader.state_root().await;
+                // 2. Compute Commitment (DaStrategy)
+                let commitment_res = self.da_strategy.compute_commitment(batch);
 
-                    counter!("batch_transitions_total", "from" => "Proving", "to" => "Proved")
-                        .increment(1);
-                    histogram!("prove_duration_seconds").record(start.elapsed().as_secs_f64());
+                match (old_root_res, commitment_res) {
+                    (Ok(old_root_h256), Ok(commitment_h256)) => {
+                        // 3. Sanitize Inputs (Orchestrator)
+                        let da_input = U256::from_big_endian(commitment_h256.as_bytes()) % SNARK_SCALAR_FIELD;
+                        let old_root_input = U256::from_big_endian(old_root_h256.as_bytes()) % SNARK_SCALAR_FIELD;
+
+                        // Parse new_root from hex string
+                        let new_root_val = match batch.new_root.parse::<H256>() {
+                            Ok(h) => U256::from_big_endian(h.as_bytes()) % SNARK_SCALAR_FIELD,
+                            Err(e) => {
+                                self.handle_failure(batch, format!("Invalid new_root: {}", e))
+                                    .await?;
+                                return Ok(());
+                            }
+                        };
+
+                        // 4. Request Proof
+                        // Format public inputs as bytes. The Prover likely expects 32-byte chunks.
+                        // Order: daCommitment, oldRoot, newRoot
+                        let mut public_inputs = Vec::with_capacity(96);
+                        let mut buf = [0u8; 32];
+                        da_input.to_big_endian(&mut buf);
+                        public_inputs.extend_from_slice(&buf);
+                        old_root_input.to_big_endian(&mut buf);
+                        public_inputs.extend_from_slice(&buf);
+                        new_root_val.to_big_endian(&mut buf);
+                        public_inputs.extend_from_slice(&buf);
+
+                        match self.prover.get_proof(&batch.id, &public_inputs).await {
+                            Ok(response) => {
+                                batch.proof = Some(response.proof);
+                                batch.transition_to(BatchStatus::Proved);
+                                batch.attempts = 0;
+                                self.storage.save_batch(batch).await?;
+
+                                counter!("batch_transitions_total", "from" => "Proving", "to" => "Proved")
+                                    .increment(1);
+                                histogram!("prove_duration_seconds").record(start.elapsed().as_secs_f64());
+                            }
+                            Err(e) => {
+                                self.handle_failure(batch, e.to_string()).await?;
+                            }
+                        }
+                    }
+                    (Err(e), _) => {
+                         self.handle_failure(batch, format!("Failed to fetch state root: {}", e)).await?;
+                    }
+                    (_, Err(e)) => {
+                        self.handle_failure(batch, format!("Failed to compute commitment: {}", e)).await?;
+                    }
                 }
-                Err(e) => {
-                    self.handle_failure(batch, e.to_string()).await?;
-                }
-            },
+            }
             BatchStatus::Proved => {
                 batch.transition_to(BatchStatus::Submitting);
                 self.storage.save_batch(batch).await?;
@@ -177,7 +233,7 @@ impl Orchestrator {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::application::ports::{DaStrategy, ProofProvider, ProofResponse, Storage};
+    use crate::application::ports::{BridgeReader, DaStrategy, ProofProvider, ProofResponse, Storage};
     use crate::domain::{
         batch::{Batch, BatchId},
         errors::DomainError,
@@ -232,6 +288,14 @@ mod tests {
 
     #[async_trait]
     impl DaStrategy for MockDa {
+        fn da_id(&self) -> u8 { 0 }
+        fn compute_commitment(&self, _batch: &Batch) -> Result<H256, DomainError> {
+            Ok(H256::zero())
+        }
+        fn encode_da_meta(&self, _batch: &Batch) -> Result<Vec<u8>, DomainError> {
+             Ok(vec![])
+        }
+
         async fn submit(&self, _b: &Batch, _p: &str) -> Result<String, DomainError> {
             if self.should_fail_submit {
                 Err(DomainError::Da("fail".into()))
@@ -245,6 +309,14 @@ mod tests {
             } else {
                 Ok(self.confirm_result)
             }
+        }
+    }
+
+    struct MockBridgeReader;
+    #[async_trait]
+    impl BridgeReader for MockBridgeReader {
+        async fn state_root(&self) -> Result<H256, DomainError> {
+            Ok(H256::zero())
         }
     }
 
@@ -265,16 +337,20 @@ mod tests {
             should_fail_confirm: da_confirm_fail,
             confirm_result: true,
         });
+        let reader = Arc::new(MockBridgeReader);
 
         (
-            Orchestrator::new(storage.clone(), prover, da, 5),
+            Orchestrator::new(storage.clone(), prover, da, reader, 5),
             storage,
         )
     }
 
+    // Valid 32-byte hex for tests
+    const VALID_HASH: &str = "0x0000000000000000000000000000000000000000000000000000000000000000";
+
     #[tokio::test]
     async fn test_proving_success() {
-        let batch = Batch::new(1, "b", "f".into(), "h".into(), "r".into(), "m".into());
+        let batch = Batch::new(1, "b", "f".into(), "h".into(), VALID_HASH.into(), "m".into());
         let (orch, store) = create_orchestrator(batch.clone(), false, false, false);
 
         // Discovered -> Proving
@@ -289,7 +365,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_proving_retry() {
-        let mut batch = Batch::new(1, "b", "f".into(), "h".into(), "r".into(), "m".into());
+        let mut batch = Batch::new(1, "b", "f".into(), "h".into(), VALID_HASH.into(), "m".into());
         batch.status = BatchStatus::Proving;
 
         let (orch, store) = create_orchestrator(batch.clone(), true, false, false);
@@ -303,7 +379,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_proving_dead_letter() {
-        let mut batch = Batch::new(1, "b", "f".into(), "h".into(), "r".into(), "m".into());
+        let mut batch = Batch::new(1, "b", "f".into(), "h".into(), VALID_HASH.into(), "m".into());
         batch.status = BatchStatus::Proving;
         batch.attempts = 4; // Max is 5
 
@@ -317,7 +393,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_submitting_missing_proof() {
-        let mut batch = Batch::new(1, "b", "f".into(), "h".into(), "r".into(), "m".into());
+        let mut batch = Batch::new(1, "b", "f".into(), "h".into(), VALID_HASH.into(), "m".into());
         batch.status = BatchStatus::Submitting;
         batch.proof = None; // Should fail
 
@@ -331,7 +407,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_submitted_revert() {
-        let mut batch = Batch::new(1, "b", "f".into(), "h".into(), "r".into(), "m".into());
+        let mut batch = Batch::new(1, "b", "f".into(), "h".into(), VALID_HASH.into(), "m".into());
         batch.status = BatchStatus::Submitted;
         batch.tx_hash = Some("0x123".into());
 

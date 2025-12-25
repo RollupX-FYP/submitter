@@ -1,8 +1,9 @@
 use crate::application::ports::DaStrategy;
-use crate::contracts::{Groth16Proof, ZKRollupBridge};
+use crate::contracts::{parse_groth16_proof, ZKRollupBridge};
 use crate::domain::{batch::Batch, errors::DomainError};
 use async_trait::async_trait;
 use ethers::prelude::*;
+use ethers::utils::{hex, keccak256};
 use metrics::counter;
 use std::{fs, sync::Arc};
 use tracing::{info, warn};
@@ -21,12 +22,23 @@ impl<M: Middleware + 'static> CalldataStrategy<M> {
 
 #[async_trait]
 impl<M: Middleware + 'static> DaStrategy for CalldataStrategy<M> {
-    async fn submit(&self, batch: &Batch, _proof: &str) -> Result<String, DomainError> {
-        let proof = Groth16Proof {
-            a: [U256::zero(), U256::zero()],
-            b: [[U256::zero(), U256::zero()], [U256::zero(), U256::zero()]],
-            c: [U256::zero(), U256::zero()],
-        };
+    fn da_id(&self) -> u8 {
+        0
+    }
+
+    fn compute_commitment(&self, batch: &Batch) -> Result<H256, DomainError> {
+        let batch_data = fs::read(&batch.data_file)
+            .map_err(|e| DomainError::Da(format!("Failed to read batch file: {}", e)))?;
+        Ok(H256::from(keccak256(&batch_data)))
+    }
+
+    fn encode_da_meta(&self, _batch: &Batch) -> Result<Vec<u8>, DomainError> {
+        Ok(Vec::new())
+    }
+
+    async fn submit(&self, batch: &Batch, proof_hex: &str) -> Result<String, DomainError> {
+        let proof = parse_groth16_proof(proof_hex)
+            .map_err(|e| DomainError::Da(format!("Invalid proof format: {}", e)))?;
 
         let batch_data = fs::read(&batch.data_file)
             .map_err(|e| DomainError::Da(format!("Failed to read batch file: {}", e)))?;
@@ -36,10 +48,17 @@ impl<M: Middleware + 'static> DaStrategy for CalldataStrategy<M> {
             .parse()
             .map_err(|e| DomainError::Da(format!("Invalid new root: {}", e)))?;
 
-        let bridge = self.bridge.clone();
-        let call = bridge.commit_batch_calldata(batch_data.into(), new_root.into(), proof);
+        let da_meta = self.encode_da_meta(batch)?;
 
-        // Just send, do not wait for mining
+        let bridge = self.bridge.clone();
+        let call = bridge.commit_batch(
+            self.da_id(),
+            batch_data.into(),
+            da_meta.into(),
+            new_root.into(),
+            proof,
+        );
+
         let pending = call
             .send()
             .await
@@ -64,13 +83,8 @@ impl<M: Middleware + 'static> DaStrategy for CalldataStrategy<M> {
             .map_err(|e| DomainError::Da(format!("Provider error: {}", e)))?;
 
         if let Some(r) = receipt {
-            // Check status (1 = success, 0 = failure)
             if let Some(status) = r.status {
                 if status.as_u64() == 1 {
-                    // Check confirmations
-                    // In a real env, we might wait for N confirmations.
-                    // For MVP, 1 confirmation (mined) with success status is acceptable.
-                    // But let's check strict safety if possible.
                     let block_number = r.block_number.unwrap_or_default();
                     let current_block = self
                         .client
@@ -94,7 +108,6 @@ impl<M: Middleware + 'static> DaStrategy for CalldataStrategy<M> {
                     return Err(DomainError::Da("Transaction reverted on-chain".to_string()));
                 }
             }
-            // If status is missing (pre-Byzantium), assume success if mined (risky but standard for old chains)
             Ok(true)
         } else {
             Ok(false)
@@ -135,6 +148,8 @@ mod tests {
              attempts: 0,
              created_at: chrono::Utc::now(),
              updated_at: chrono::Utc::now(),
+             blob_versioned_hash: None,
+             blob_index: None,
         };
 
         std::fs::write("test_data_calldata.txt", "dummy data").unwrap();
@@ -156,7 +171,9 @@ mod tests {
         mock.push(U256::from(100_000)); // estimateGas (eth_estimateGas)
         mock.push(H256::random()); // sendRawTransaction (eth_sendRawTransaction)
 
-        let res = strategy.submit(&batch, "proof").await;
+        // Valid proof (256 bytes hex)
+        let proof_hex = format!("0x{}", hex::encode([0u8; 256]));
+        let res = strategy.submit(&batch, &proof_hex).await;
         
         let _ = std::fs::remove_file("test_data_calldata.txt");
         if let Err(e) = &res {

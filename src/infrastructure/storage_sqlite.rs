@@ -146,6 +146,8 @@ impl Storage for SqliteStorage {
                 attempts: row.try_get("attempts").unwrap_or(0),
                 created_at,
                 updated_at,
+                blob_versioned_hash: None, // TODO: Add DB columns
+                blob_index: None,
             }))
         } else {
             Ok(None)
@@ -226,6 +228,8 @@ impl Storage for SqliteStorage {
                 attempts: row.try_get("attempts").unwrap_or(0),
                 created_at,
                 updated_at,
+                blob_versioned_hash: None,
+                blob_index: None,
             });
         }
 
@@ -254,6 +258,8 @@ mod tests {
             attempts: 0,
             created_at: Utc::now(),
             updated_at: Utc::now(),
+            blob_versioned_hash: None,
+            blob_index: None,
         };
 
         // Save

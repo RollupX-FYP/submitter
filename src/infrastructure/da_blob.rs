@@ -1,9 +1,12 @@
 use crate::application::ports::DaStrategy;
-use crate::contracts::{Groth16Proof, ZKRollupBridge};
+use crate::contracts::{parse_groth16_proof, ZKRollupBridge};
 use crate::domain::{batch::Batch, errors::DomainError};
 use async_trait::async_trait;
+use ethers::abi::{encode, Token};
 use ethers::prelude::*;
+use ethers::utils::hex;
 use metrics::counter;
+use std::str::FromStr;
 use std::sync::Arc;
 use tracing::{info, warn};
 
@@ -12,7 +15,6 @@ pub struct BlobStrategy<M: Middleware> {
     client: Arc<M>,
     blob_versioned_hash: H256,
     blob_index: u8,
-    use_opcode: bool,
 }
 
 impl<M: Middleware + 'static> BlobStrategy<M> {
@@ -20,7 +22,7 @@ impl<M: Middleware + 'static> BlobStrategy<M> {
         bridge: ZKRollupBridge<M>,
         blob_versioned_hash: H256,
         blob_index: u8,
-        use_opcode: bool,
+        _use_opcode: bool, // Deprecated
     ) -> Self {
         let client = bridge.client();
         Self {
@@ -28,35 +30,61 @@ impl<M: Middleware + 'static> BlobStrategy<M> {
             client,
             blob_versioned_hash,
             blob_index,
-            use_opcode,
         }
     }
 }
 
 #[async_trait]
 impl<M: Middleware + 'static> DaStrategy for BlobStrategy<M> {
-    async fn submit(&self, batch: &Batch, _proof: &str) -> Result<String, DomainError> {
-        let proof = Groth16Proof {
-            a: [U256::zero(), U256::zero()],
-            b: [[U256::zero(), U256::zero()], [U256::zero(), U256::zero()]],
-            c: [U256::zero(), U256::zero()],
+    fn da_id(&self) -> u8 {
+        1
+    }
+
+    fn compute_commitment(&self, batch: &Batch) -> Result<H256, DomainError> {
+        if let Some(ref hash_str) = batch.blob_versioned_hash {
+            H256::from_str(hash_str)
+                .map_err(|e| DomainError::Da(format!("Invalid blob versioned hash: {}", e)))
+        } else {
+            Ok(self.blob_versioned_hash)
+        }
+    }
+
+    fn encode_da_meta(&self, batch: &Batch) -> Result<Vec<u8>, DomainError> {
+        let hash = if let Some(ref hash_str) = batch.blob_versioned_hash {
+             H256::from_str(hash_str)
+                .map_err(|e| DomainError::Da(format!("Invalid blob versioned hash: {}", e)))?
+        } else {
+            self.blob_versioned_hash
         };
+
+        let index = batch.blob_index.unwrap_or(self.blob_index);
+
+        Ok(encode(&[
+            Token::FixedBytes(hash.as_bytes().to_vec()),
+            Token::Uint(index.into()),
+        ]))
+    }
+
+    async fn submit(&self, batch: &Batch, proof_hex: &str) -> Result<String, DomainError> {
+        let proof = parse_groth16_proof(proof_hex)
+            .map_err(|e| DomainError::Da(format!("Invalid proof format: {}", e)))?;
 
         let new_root: H256 = batch
             .new_root
             .parse()
             .map_err(|e| DomainError::Da(format!("Invalid new root: {}", e)))?;
 
+        let da_meta = self.encode_da_meta(batch)?;
+
         let bridge = self.bridge.clone();
-        let call = bridge.commit_batch_blob(
-            self.blob_versioned_hash.into(),
-            self.blob_index,
-            self.use_opcode,
+        let call = bridge.commit_batch(
+            self.da_id(),
+            Bytes::new(), // batchData is empty for Blob
+            da_meta.into(),
             new_root.into(),
             proof,
         );
 
-        // Just send, do not wait
         let pending = call
             .send()
             .await
@@ -81,10 +109,8 @@ impl<M: Middleware + 'static> DaStrategy for BlobStrategy<M> {
             .map_err(|e| DomainError::Da(format!("Provider error: {}", e)))?;
 
         if let Some(r) = receipt {
-            // Check status (1 = success, 0 = failure)
             if let Some(status) = r.status {
                 if status.as_u64() == 1 {
-                    // Check confirmations
                     let block_number = r.block_number.unwrap_or_default();
                     let current_block = self
                         .client
@@ -150,6 +176,8 @@ mod tests {
              attempts: 0,
              created_at: chrono::Utc::now(),
              updated_at: chrono::Utc::now(),
+             blob_versioned_hash: None,
+             blob_index: None,
         };
 
         // Populate responses
@@ -169,7 +197,9 @@ mod tests {
         mock.push(U256::from(100_000)); // estimateGas
         mock.push(H256::random()); // hash
 
-        let res = strategy.submit(&batch, "proof").await;
+        // Valid proof (256 bytes hex)
+        let proof_hex = format!("0x{}", hex::encode([0u8; 256]));
+        let res = strategy.submit(&batch, &proof_hex).await;
         
         if let Err(e) = &res {
             println!("Submit error: {:?}", e);

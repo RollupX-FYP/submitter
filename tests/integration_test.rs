@@ -1,10 +1,11 @@
 use async_trait::async_trait;
+use ethers::types::H256;
 use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
 use submitter_rs::{
     application::{
         orchestrator::Orchestrator,
-        ports::{DaStrategy, ProofProvider, ProofResponse, Storage},
+        ports::{BridgeReader, DaStrategy, ProofProvider, ProofResponse, Storage},
     },
     domain::{
         batch::{Batch, BatchId, BatchStatus},
@@ -13,6 +14,15 @@ use submitter_rs::{
     infrastructure::storage_sqlite::SqliteStorage,
 };
 use uuid::Uuid;
+
+// Mock Bridge Reader
+struct MockBridgeReader;
+#[async_trait]
+impl BridgeReader for MockBridgeReader {
+    async fn state_root(&self) -> Result<H256, DomainError> {
+        Ok(H256::zero())
+    }
+}
 
 // Mock DA Strategy
 struct MockDaStrategy {
@@ -29,6 +39,18 @@ impl MockDaStrategy {
 
 #[async_trait]
 impl DaStrategy for MockDaStrategy {
+    fn da_id(&self) -> u8 {
+        0
+    }
+
+    fn compute_commitment(&self, _batch: &Batch) -> Result<H256, DomainError> {
+        Ok(H256::zero())
+    }
+
+    fn encode_da_meta(&self, _batch: &Batch) -> Result<Vec<u8>, DomainError> {
+        Ok(vec![])
+    }
+
     async fn submit(&self, _batch: &Batch, _proof: &str) -> Result<String, DomainError> {
         let hash = format!("0x{}", Uuid::new_v4().simple());
         *self.tx_hash.lock().unwrap() = Some(hash.clone());
@@ -73,7 +95,8 @@ async fn test_batch_lifecycle() {
     // 2. Setup Components
     let prover = Arc::new(TestProofProvider);
     let da = Arc::new(MockDaStrategy::new());
-    let orchestrator = Orchestrator::new(storage.clone(), prover, da, 5);
+    let reader = Arc::new(MockBridgeReader);
+    let orchestrator = Orchestrator::new(storage.clone(), prover, da, reader, 5);
 
     // 3. Create a batch
     let batch = Batch::new(
@@ -81,7 +104,7 @@ async fn test_batch_lifecycle() {
         "0xBridge",
         "data.txt".to_string(),
         "hash123".to_string(),
-        "0x123".to_string(),
+        "0x0000000000000000000000000000000000000000000000000000000000000000".to_string(), // Valid hex
         "calldata".to_string(),
     );
     storage
