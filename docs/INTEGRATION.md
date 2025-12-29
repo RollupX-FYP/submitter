@@ -1,80 +1,68 @@
 # Integration Guide
 
-This guide details how to integrate, deploy, and run the Submitter Daemon.
+This guide details how to deploy, configure, and operate the Submitter service in a full end-to-end environment using Docker.
 
-## Prerequisites
+## 1. Docker Orchestration
 
-*   **Rust**: Stable toolchain (1.83+ recommended).
-*   **Docker**: For containerized deployment.
-*   **PostgreSQL**: For production persistence (SQLite used for dev).
-*   **Ethereum Node**: An RPC endpoint (e.g., Anvil, Geth, Alchemy, Infura).
+The `docker-compose.yml` defines the complete topology.
 
-## Local Development Setup
+### Network Topology
+All services run on the `rollup-net` bridge network.
+*   **L1 Node**: `l1-node` (Port 8545).
+*   **Database**: `postgres` (Port 5432).
+*   **Submitter**: `submitter`.
+*   **Archiver**: `archiver` (Mock service).
 
-1.  **Clone the repository**:
-    ```bash
-    git clone https://github.com/your-org/submitter.git
-    cd submitter
-    ```
+### Shared Volumes
+*   `shared-data`: Used to pass the `deployments.json` artifact from the `setup` container (which runs `deploy-test-net.ts`) to the `submitter` container.
 
-2.  **Configuration**:
-    Copy `submitter.yaml` and modify it if needed.
-    ```bash
-    # Ensure submitter.yaml exists
-    cat submitter.yaml
-    ```
+### Startup Flow
+1.  `l1-node` starts.
+2.  `setup` container waits for port 8545.
+3.  `setup` runs deployment script, writing `deployments.json` to the shared volume.
+4.  `submitter` starts, mounts the volume, and reads the Bridge address from the JSON.
 
-3.  **Environment Variables**:
-    Create a `.env` file or export variables:
-    ```bash
-    export SUBMITTER_PRIVATE_KEY="0x..." # Your wallet private key
-    # Optional: export DATABASE_URL="sqlite:submitter.db"
-    ```
+## 2. Running the Simulation
 
-4.  **Run the Daemon**:
-    ```bash
-    cargo run --bin submitter -- --config submitter.yaml
-    ```
-
-## Docker Deployment
-
-The repository includes a Dockerfile for building a production-ready image.
-
-### Build Image
 ```bash
-docker build -t submitter:latest .
+# Start all services
+docker compose up --build
 ```
 
-### Run Container
-```bash
-docker run -d \
-  --name submitter \
-  -p 9000:9000 \
-  -e SUBMITTER_PRIVATE_KEY="0x..." \
-  -v $(pwd)/submitter.yaml:/app/submitter.yaml \
-  submitter:latest \
-  /app/submitter --config /app/submitter.yaml
+### Mock Executor Configuration
+You can tune the simulated load by editing the `executor-mock` environment variables in `docker-compose.yml`:
+
+```yaml
+executor-mock:
+  environment:
+    - BATCH_SIZE=500        # Increase throughput
+    - BATCH_TIMEOUT=2000    # Lower latency
 ```
 
-## External Services Integration
+## 3. Manual Verification
 
-### 1. Database (Postgres)
-For production, use PostgreSQL.
-*   Set `DATABASE_URL=postgres://user:password@host:5432/dbname`.
-*   The application uses `sqlx` and should handle schema creation if migrations are embedded (check source). *Note: Ensure tables `batches` exists.*
+To verify the system state manually:
 
-### 2. Prover Service
-The daemon sends HTTP POST requests to the configured `prover.url`.
-*   Ensure your Prover Service complies with the API described in `docs/API.md`.
-*   If testing, you can omit `prover.url` in config to use the internal **Mock Prover**.
+### Inspect Database
+```bash
+# Connect to the running Postgres container
+docker exec -it <container_id> psql -U user -d submitter
 
-### 3. Smart Contract (Bridge)
-The daemon interacts with the `ZKRollupBridge` contract.
-*   Ensure the `contracts.bridge` address in `submitter.yaml` is correct for the connected chain (`network.chain_id`).
-*   The wallet (`SUBMITTER_PRIVATE_KEY`) must have ETH to pay for gas.
+# Query batches
+SELECT id, status, tx_hash FROM batches;
+```
 
-## Troubleshooting
+### Verify L1 State
+Run the verification script from the host machine:
 
-*   **"Missing env SUBMITTER_PRIVATE_KEY"**: Ensure the environment variable is set.
-*   **"Provider error"**: Check your `rpc_url` and ensure the node is reachable.
-*   **Circuit Breaker Open**: The Prover Service is down or returning 500s. Check the Prover logs.
+```bash
+cd contracts
+npx hardhat run scripts/verify-state.ts --network localhost
+```
+*Note: Ensure your localhost `hardhat.config.ts` points to port 8545.*
+
+## 4. Troubleshooting
+
+*   **"Missing deployments.json"**: The `setup` container failed. Check logs with `docker compose logs setup`.
+*   **"Blobs not supported"**: Ensure `l1-node` is running a Hardhat version that supports the `cancun` hardfork (configured in `hardhat.config.ts`).
+*   **"Address in use"**: Kill any local instances of `submitter-rs` or `hardhat node` running outside Docker.

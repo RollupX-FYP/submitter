@@ -1,10 +1,9 @@
 # ZK Rollup Batch Submitter
 
-[![CI](https://github.com/your-org/submitter/actions/workflows/ci.yml/badge.svg)](https://github.com/your-org/submitter/actions/workflows/ci.yml)
-[![Coverage](https://github.com/your-org/submitter/actions/workflows/coverage.yml/badge.svg)](https://github.com/your-org/submitter/actions/workflows/coverage.yml)
-[![Security](https://github.com/your-org/submitter/actions/workflows/security.yml/badge.svg)](https://github.com/your-org/submitter/actions/workflows/security.yml)
-[![Docker](https://github.com/your-org/submitter/actions/workflows/docker-publish.yml/badge.svg)](https://github.com/your-org/submitter/actions/workflows/docker-publish.yml)
-[![Proof HTML](https://github.com/your-org/submitter/actions/workflows/proof-html.yml/badge.svg)](https://github.com/your-org/submitter/actions/workflows/proof-html.yml)
+[![CI](https://github.com/RollupX-FYP/submitter/actions/workflows/ci.yml/badge.svg)](https://github.com/RollupX-FYP/submitter/actions/workflows/ci.yml)
+[![Coverage](https://github.com/RollupX-FYP/submitter/actions/workflows/coverage.yml/badge.svg)](https://github.com/RollupX-FYP/submitter/actions/workflows/coverage.yml)
+[![Security](https://github.com/RollupX-FYP/submitter/actions/workflows/security.yml/badge.svg)](https://github.com/RollupX-FYP/submitter/actions/workflows/security.yml)
+[![Docker](https://github.com/RollupX-FYP/submitter/actions/workflows/docker-publish.yml/badge.svg)](https://github.com/RollupX-FYP/submitter/actions/workflows/docker-publish.yml)
 
 A production-grade, highly reliable Rust service for submitting ZK Rollup batches to Ethereum. It handles the complete lifecycle of batches from discovery to proof generation and on-chain submission, utilizing a robust Domain-Driven Design (DDD) architecture.
 
@@ -12,10 +11,12 @@ A production-grade, highly reliable Rust service for submitting ZK Rollup batche
 
 - **Robust Architecture:** Built using **Domain-Driven Design (DDD)** principles and Hexagonal Architecture (Ports and Adapters).
 - **Reliability & Resilience:** Implements **Outbox Pattern**, **Saga Workflow**, **Circuit Breakers**, **Exponential Backoff**, and **Crash Recovery** to ensure fault tolerance.
-- **Data Availability:** Supports both **Calldata** (Legacy) and **EIP-4844 Blobs** for cost-efficient data posting.
+- **Data Availability:** Supports **Calldata** (Legacy) and **EIP-4844 Blobs** with **Archiver** integration for long-term persistence.
+- **Experimental Features:**
+    - **Priority Scheduling:** Reorders batches based on fees when configured.
+    - **Payload Compression:** Compresses calldata using Zlib (flate2) to reduce L1 costs.
 - **Idempotency:** Deterministic batch processing (UUID v5) prevents double-spending and ensures consistency.
 - **Observability:** Built-in Prometheus metrics and structured JSON logging (Tracing).
-- **Flexibility:** Configurable via YAML and Environment Variables.
 - **Persistence:** Supports both **SQLite** (local/dev) and **PostgreSQL** (production).
 
 ## Documentation
@@ -27,6 +28,7 @@ For more detailed information, please refer to:
 - [**Integration Guide**](docs/INTEGRATION.md): Detailed deployment, database, and external service setup.
 - [**Best Practices**](BEST_PRACTICES.md): Explanation of system design patterns.
 - [**Agent Instructions**](AGENTS.md): Guidelines for contributors and AI agents.
+- [**Local Testing**](../LOCAL_TESTING.md): End-to-end local testing guide.
 
 ## Getting Started
 
@@ -34,25 +36,33 @@ For more detailed information, please refer to:
 
 - **Rust**: Latest stable version (1.83+ recommended).
 - **Docker**: For containerized deployment and Postgres integration tests.
-- **Ethereum Node**: An RPC endpoint (e.g., Anvil, Geth).
+- **Ethereum Node**: An RPC endpoint (e.g., Anvil, Hardhat, Geth).
 
 ### Configuration
 
-The daemon is configured via `submitter.yaml`. You can copy the example in the repo.
-
-```bash
-# Run with SQLite (default)
-cargo run --bin submitter -- --config submitter.yaml
-```
+The daemon is configured via a YAML file (e.g., `submitter.yaml`) and Environment Variables.
 
 **Environment Variables:**
 - `SUBMITTER_PRIVATE_KEY`: **Required**. The private key (hex) of the wallet submitting transactions.
-- `DATABASE_URL`: **Optional**. Connection string for the database (e.g., `postgres://user:pass@localhost:5432/db`).
+- `DATABASE_URL`: **Required**. Connection string for the database.
+    - SQLite: `sqlite://data/submitter.db`
+    - Postgres: `postgres://user:pass@localhost:5432/db`
+- `RUST_LOG`: **Optional**. Log level (e.g., `info`, `debug`).
+
+### Running Locally
+
+To run with a local SQLite database:
 
 ```bash
-# Run with Postgres
-export DATABASE_URL="postgres://user:pass@localhost:5432/db"
-export SUBMITTER_PRIVATE_KEY="0x..."
+# 1. Create data directory and db file
+mkdir -p data
+touch data/submitter.db
+
+# 2. Export Env Vars
+export DATABASE_URL=sqlite://data/submitter.db
+export SUBMITTER_PRIVATE_KEY="0x..." # Replace with your key
+
+# 3. Run
 cargo run --bin submitter -- --config submitter.yaml
 ```
 

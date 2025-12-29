@@ -1,10 +1,11 @@
 use async_trait::async_trait;
+use ethers::types::H256;
 use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
 use submitter_rs::{
     application::{
         orchestrator::Orchestrator,
-        ports::{DaStrategy, ProofProvider, ProofResponse, Storage},
+        ports::{BridgeReader, DaStrategy, ProofProvider, ProofResponse, Storage},
     },
     domain::{
         batch::{Batch, BatchId, BatchStatus},
@@ -29,6 +30,18 @@ impl MockDaStrategy {
 
 #[async_trait]
 impl DaStrategy for MockDaStrategy {
+    fn da_id(&self) -> u8 {
+        0
+    }
+
+    fn compute_commitment(&self, _batch: &Batch) -> Result<H256, DomainError> {
+        Ok(H256::zero())
+    }
+
+    fn encode_da_meta(&self, _batch: &Batch) -> Result<Vec<u8>, DomainError> {
+        Ok(vec![])
+    }
+
     async fn submit(&self, _batch: &Batch, _proof: &str) -> Result<String, DomainError> {
         let hash = format!("0x{}", Uuid::new_v4().simple());
         *self.tx_hash.lock().unwrap() = Some(hash.clone());
@@ -60,8 +73,23 @@ impl ProofProvider for TestProofProvider {
     }
 }
 
+// Mock Bridge Reader
+struct MockBridgeReader;
+#[async_trait]
+impl BridgeReader for MockBridgeReader {
+    async fn state_root(&self) -> Result<H256, DomainError> {
+        Ok(H256::zero())
+    }
+}
+
 #[tokio::test]
 async fn test_batch_lifecycle() {
+    // Initialize tracing for debug output
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter("debug")
+        .with_test_writer()
+        .try_init();
+
     // 1. Setup Storage
     let db_url = "sqlite::memory:";
     let storage = Arc::new(
@@ -73,7 +101,8 @@ async fn test_batch_lifecycle() {
     // 2. Setup Components
     let prover = Arc::new(TestProofProvider);
     let da = Arc::new(MockDaStrategy::new());
-    let orchestrator = Orchestrator::new(storage.clone(), prover, da, 5);
+    let bridge_reader = Arc::new(MockBridgeReader);
+    let orchestrator = Orchestrator::new(storage.clone(), prover, da, bridge_reader, 5);
 
     // 3. Create a batch
     let batch = Batch::new(
@@ -81,13 +110,16 @@ async fn test_batch_lifecycle() {
         "0xBridge",
         "data.txt".to_string(),
         "hash123".to_string(),
-        "0x123".to_string(),
+        // new_root must be valid hex for Orchestrator parsing
+        "0x0000000000000000000000000000000000000000000000000000000000000000".to_string(),
         "calldata".to_string(),
     );
     storage
         .save_batch(&batch)
         .await
         .expect("Failed to save batch");
+
+    println!("Batch created: {:?}", batch);
 
     // 4. Run one iteration of orchestrator (Discovered -> Proving)
     orchestrator
@@ -96,6 +128,7 @@ async fn test_batch_lifecycle() {
         .expect("Failed to process");
 
     let updated = storage.get_batch(batch.id).await.unwrap().unwrap();
+    println!("After Iter 1: Status={:?}, Attempts={}", updated.status, updated.attempts);
     assert_eq!(updated.status, BatchStatus::Proving);
 
     // 5. Run iteration (Proving -> Proved)
@@ -104,6 +137,13 @@ async fn test_batch_lifecycle() {
         .await
         .expect("Failed to process");
     let updated = storage.get_batch(batch.id).await.unwrap().unwrap();
+    println!("After Iter 2: Status={:?}, Attempts={}", updated.status, updated.attempts);
+
+    // If it failed, print why (indirectly via attempts)
+    if updated.status != BatchStatus::Proved {
+        println!("Test Failed at Step 5. Batch still in {:?}. Attempts incremented to {}.", updated.status, updated.attempts);
+    }
+
     assert_eq!(updated.status, BatchStatus::Proved);
     assert!(updated.proof.is_some());
 

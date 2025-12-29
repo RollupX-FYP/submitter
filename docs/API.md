@@ -1,70 +1,88 @@
 # API Documentation
 
-This document describes the APIs exposed by the Submitter Daemon and the APIs it consumes.
+This document provides a comprehensive reference for the Submitter Service's Configuration and Metrics APIs.
 
-## Metrics API
+## 1. Configuration (`submitter.yaml`)
 
-The service exposes Prometheus metrics on port `9000` by default.
+The configuration file is deserialized into the `Config` struct defined in `src/config.rs`.
 
-**Endpoint**: `GET /metrics`
+### `network`
+Defines the connection to the L1 chain.
+*   `rpc_url` (String): HTTP endpoint for the JSON-RPC node.
+*   `chain_id` (Integer): Chain ID (e.g., 1 for Mainnet, 31337 for Hardhat).
 
-### Key Metrics
-- `batch_transitions_total`: Counter of state transitions (e.g., Discovered -> Proving).
-- `prove_duration_seconds`: Histogram of time taken to generate proofs.
-- `submit_tx_duration_seconds`: Histogram of time taken to submit transactions to Ethereum.
-- `batches_completed_total`: Total number of batches successfully confirmed.
-- `batch_failures_total`: Total failures encountered.
+### `contracts`
+Addresses of deployed smart contracts.
+*   `bridge` (Address): The `ZKRollupBridge` contract address (0x...).
 
-## Configuration Interface
+### `da` (Data Availability)
+Controls how batch data is posted to Ethereum.
+*   `mode` (Enum):
+    *   `calldata`: Uses `calldata` in standard transactions.
+    *   `blob`: Uses EIP-4844 blobs.
+*   `blob_binding` (Enum):
+    *   `opcode`: Expects a real network supporting `BLOBHASH`.
+    *   `mock`: For local testing where blob sidecars might not be fully supported by the node.
+*   `blob_index` (Integer): The index of the blob in the transaction (usually 0).
+*   `archiver_url` (String): URL of the external Archiver service to store blob data before expiry.
 
-The primary "API" for the user is the configuration. The daemon is configured via `submitter.yaml` and Environment Variables.
+### `fees` (Experimental)
+Research controls for fee market behavior (RQ2).
+*   `policy` (Enum):
+    *   `standard`: Uses standard gas estimation.
+    *   `aggressive`: Bids higher priority fees to reduce latency.
+    *   `fixed`: Uses a hardcoded gas price (for baseline benchmarks).
+*   `max_blob_fee_gwei` (Integer): Cap on the blob base fee.
 
-### `submitter.yaml`
-```yaml
-network:
-  rpc_url: "http://127.0.0.1:8545" # Ethereum RPC URL
-  chain_id: 31337
+### `flow` (Experimental)
+Controls for transaction inclusion logic.
+*   `enable_forced_inclusion` (Boolean): If true, the Submitter checks the L1 Forced Queue and includes those transactions (simulated).
 
-contracts:
-  bridge: "0x..." # Address of the ZKRollupBridge contract
+### `resilience`
+Reliability settings.
+*   `max_retries` (Integer): Number of times to retry a failed batch before marking it `Failed`.
+*   `circuit_breaker_threshold` (Integer): Consecutive failures allowed for external services (Prover) before pausing.
 
-da:
-  mode: "calldata" # "calldata" or "blob" (EIP-4844)
-  blob_binding: "mock" # "mock" or "opcode"
-  blob_index: 0 # Index of the blob in the transaction
+### `simulation`
+Parameters for the Simulation Layer (Mock Prover).
+*   `mock_proving_time_ms` (Integer): Milliseconds to sleep during proof generation to simulate ZK computation time.
+*   `gas_price_fluctuation` (Float): Multiplier to simulate volatile L1 fees.
 
-prover:
-  url: "http://localhost:3000" # URL of the Prover Service (optional, defaults to Mock if omitted)
+### `sequencer` (Mock/Future)
+Parameters that define the behavior of the simulated Sequencer.
+*   `batch_size` (Integer): Target number of transactions per batch.
+*   `batch_timeout_ms` (Integer): Max time to wait before sealing a batch.
+*   `ordering_policy` (String): Strategy for ordering txs (`fifo`, `fee_priority`).
 
-resilience:
-  max_retries: 5
-  circuit_breaker_threshold: 5
-```
+### `aggregator` (Mock/Future)
+Parameters for data compression strategies (RQ3).
+*   `compression` (Enum): `full_tx_data` vs `state_diff`.
 
-### Environment Variables
-- `SUBMITTER_PRIVATE_KEY`: **Required**. The private key (hex) of the wallet submitting transactions.
-- `DATABASE_URL`: **Optional**. Connection string for the database (e.g., `postgres://user:pass@localhost:5432/db` or `sqlite:submitter.db`).
+---
 
-## Internal/External APIs
+## 2. Environment Variables
 
-### Prover API
-If using the `HttpProofProvider` (production), the daemon expects an external Prover Service listening at the configured `prover.url`.
+Secrets and infrastructure bindings are strictly handled via Environment Variables.
 
-**Request**: `POST /prove`
-```json
-{
-  "batch_id": "uuid-string",
-  "public_inputs": [ ... byte array ... ]
-}
-```
+| Variable | Required | Description |
+| :--- | :--- | :--- |
+| `SUBMITTER_PRIVATE_KEY` | **Yes** | Hex-encoded private key of the account sending transactions. |
+| `DATABASE_URL` | **Yes** | Connection string. `sqlite://file.db` or `postgres://user:pass@host:5432/db`. |
+| `RUST_LOG` | No | Logging level (default `info`). Example: `debug,submitter_rs=trace`. |
 
-**Response**: `200 OK`
-```json
-{
-  "proof": "hex-encoded-proof-string"
-}
-```
-**Error**: Any non-200 status code triggers a retry (with exponential backoff) or circuit breaker trip.
+---
 
-### Ethereum RPC
-The daemon uses standard JSON-RPC methods (`eth_sendRawTransaction`, `eth_getTransactionReceipt`, etc.) to interact with the Ethereum chain.
+## 3. Metrics API (Prometheus)
+
+The service runs a dedicated HTTP server on port `9000` exposing `/metrics`.
+
+### Counters
+*   `batch_transitions_total`: Logs state changes (e.g., `Discovered` -> `Proving`). Labels: `from`, `to`.
+*   `batches_completed_total`: Total successful batches confirmed on L1.
+*   `batch_failures_total`: Total error events. Label: `batch_id`.
+*   `batches_failed_permanent_total`: Batches that exceeded retry limits.
+
+### Histograms
+*   `prove_duration_seconds`: Time taken by the ProofProvider.
+*   `submit_tx_duration_seconds`: Time taken to construct and broadcast the transaction.
+*   `batch_e2e_duration_seconds`: Total time from `Discovered` to `Confirmed`.

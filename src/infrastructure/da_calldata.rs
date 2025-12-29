@@ -7,16 +7,21 @@ use ethers::utils::{hex, keccak256};
 use metrics::counter;
 use std::{fs, sync::Arc};
 use tracing::{info, warn};
+use flate2::write::ZlibEncoder;
+use flate2::Compression;
+use std::io::Write;
+use crate::config::CompressionMode;
 
 pub struct CalldataStrategy<M: Middleware> {
     bridge: ZKRollupBridge<M>,
     client: Arc<M>,
+    compression_mode: Option<CompressionMode>,
 }
 
 impl<M: Middleware + 'static> CalldataStrategy<M> {
-    pub fn new(bridge: ZKRollupBridge<M>) -> Self {
+    pub fn new(bridge: ZKRollupBridge<M>, compression_mode: Option<CompressionMode>) -> Self {
         let client = bridge.client();
-        Self { bridge, client }
+        Self { bridge, client, compression_mode }
     }
 }
 
@@ -27,8 +32,15 @@ impl<M: Middleware + 'static> DaStrategy for CalldataStrategy<M> {
     }
 
     fn compute_commitment(&self, batch: &Batch) -> Result<H256, DomainError> {
-        let batch_data = fs::read(&batch.data_file)
+        let mut batch_data = fs::read(&batch.data_file)
             .map_err(|e| DomainError::Da(format!("Failed to read batch file: {}", e)))?;
+
+        if self.compression_mode.is_some() {
+            let mut encoder = ZlibEncoder::new(Vec::new(), Compression::default());
+            encoder.write_all(&batch_data).map_err(|e| DomainError::Da(format!("Compression failed: {}", e)))?;
+            batch_data = encoder.finish().map_err(|e| DomainError::Da(format!("Compression failed: {}", e)))?;
+        }
+
         Ok(H256::from(keccak256(&batch_data)))
     }
 
@@ -40,8 +52,14 @@ impl<M: Middleware + 'static> DaStrategy for CalldataStrategy<M> {
         let proof = parse_groth16_proof(proof_hex)
             .map_err(|e| DomainError::Da(format!("Invalid proof format: {}", e)))?;
 
-        let batch_data = fs::read(&batch.data_file)
+        let mut batch_data = fs::read(&batch.data_file)
             .map_err(|e| DomainError::Da(format!("Failed to read batch file: {}", e)))?;
+
+        if self.compression_mode.is_some() {
+            let mut encoder = ZlibEncoder::new(Vec::new(), Compression::default());
+            encoder.write_all(&batch_data).map_err(|e| DomainError::Da(format!("Compression failed: {}", e)))?;
+            batch_data = encoder.finish().map_err(|e| DomainError::Da(format!("Compression failed: {}", e)))?;
+        }
 
         let new_root: H256 = batch
             .new_root
@@ -135,7 +153,7 @@ mod tests {
         let client = Arc::new(SignerMiddleware::new(provider, wallet.with_chain_id(1u64)));
         let bridge_addr = Address::random();
         let bridge = ZKRollupBridge::new(bridge_addr, client.clone());
-        let strategy = CalldataStrategy::new(bridge);
+        let strategy = CalldataStrategy::new(bridge, None);
 
         let batch = Batch {
              id: crate::domain::batch::BatchId(uuid::Uuid::new_v4()),
@@ -190,7 +208,7 @@ mod tests {
         let client = Arc::new(SignerMiddleware::new(provider, wallet.with_chain_id(1u64)));
         let bridge_addr = Address::random();
         let bridge = ZKRollupBridge::new(bridge_addr, client.clone());
-        let strategy = CalldataStrategy::new(bridge);
+        let strategy = CalldataStrategy::new(bridge, None);
         
         let tx_hash = H256::random();
         

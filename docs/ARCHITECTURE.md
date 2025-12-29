@@ -2,76 +2,90 @@
 
 The Submitter Daemon follows a **Domain-Driven Design (DDD)** approach with a **Hexagonal Architecture** (Ports and Adapters). This ensures the core logic is isolated from external dependencies like databases, blockchains, and HTTP services.
 
-## High-Level Overview
+## 1. Domain Layer (`src/domain/`)
+
+The innermost layer containing pure business logic and type definitions. It has zero external dependencies.
+
+*   **Entities**:
+    *   `Batch`: The aggregate root. Tracks ID, status, data pointers, and retry counts.
+*   **Value Objects**:
+    *   `BatchId`: A UUID v5 generated deterministically from batch parameters to ensure idempotency.
+*   **Enums**:
+    *   `BatchStatus`:
+        *   `Discovered`: Ingested from the Sequencer/DB.
+        *   `Proving`: Request sent to ZK Prover.
+        *   `Proved`: Proof received.
+        *   `Submitting`: Transaction construction in progress.
+        *   `Submitted`: Tx broadcasted to L1.
+        *   `Confirmed`: Tx mined and settled.
+        *   `Failed`: Terminal error state.
+
+## 2. Application Layer (`src/application/`)
+
+Contains the orchestration logic that drives the domain entities through their lifecycle.
+
+### The Orchestrator Loop
+The `Orchestrator` service runs an infinite loop (polled via `tokio::time::sleep`) that performs the following steps:
 
 ```mermaid
-graph TD
-    subgraph "Core Domain"
-        Batch[Batch Entity]
-        StateMachine[State Machine Logic]
-    end
+sequenceDiagram
+    participant O as Orchestrator
+    participant S as Storage (DB)
+    participant P as Prover
+    participant A as Archiver (HTTP)
+    participant L1 as L1 Chain
 
-    subgraph "Application Layer"
-        Orchestrator[Orchestrator]
-        Ports[Ports (Traits)]
-    end
+    loop Every 5s
+        O->>S: get_pending_batches()
+        S-->>O: [Batch 1, Batch 2...]
 
-    subgraph "Infrastructure Layer"
-        Storage[Storage Adapter (SQLx)]
-        Prover[Prover Adapter (HTTP/Mock)]
-        DA[DA Strategy (Calldata/Blob)]
+        par Process Batch 1
+            alt Status == Discovered
+                O->>P: get_proof(Batch 1)
+                P-->>O: Proof
+                O->>O: Update Status -> Proved
+                O->>S: Save
+            else Status == Proved
+                opt Mode == Blob
+                   O->>A: POST /blobs (Payload)
+                end
+                O->>L1: commitBatch(Proof, Data)
+                L1-->>O: TxHash
+                O->>O: Update Status -> Submitted
+                O->>S: Save
+            else Status == Submitted
+                O->>L1: check_confirmation(TxHash)
+                alt Mined
+                    O->>O: Update Status -> Confirmed
+                    O->>S: Save
+                end
+            end
+        end
     end
-
-    Orchestrator --> Ports
-    Ports -.-> Storage
-    Ports -.-> Prover
-    Ports -.-> DA
-    
-    Orchestrator --> Batch
-    Batch --> StateMachine
 ```
 
-## Layers
+### Ports (Traits)
+Interfaces defined in `ports.rs` that the Application layer depends on:
+*   `Storage`: `save_batch`, `get_batch`.
+*   `ProofProvider`: `get_proof`.
+*   `DaStrategy`: `submit`, `check_confirmation`.
+*   `BridgeReader`: `state_root`.
 
-### 1. Domain (`src/domain/`)
-Contains the pure business logic and entities.
-*   **Batch**: The core entity tracking the lifecycle of a rollup batch.
-*   **BatchStatus**: Enum representing the state (`Discovered`, `Proving`, `Proved`, `Submitting`, `Submitted`, `Confirmed`, `Failed`).
-*   **DomainError**: Standardized error types for the application.
+## 3. Infrastructure Layer (`src/infrastructure/`)
 
-### 2. Application (`src/application/`)
-Orchestrates the flow of data using the Domain entities and Ports.
-*   **Orchestrator**: The main loop that fetches pending batches and drives them through the state machine.
-*   **Ports**: Rust `traits` defining the interfaces for external systems:
-    *   `Storage`: For saving/retrieving batches.
-    *   `ProofProvider`: For generating ZK proofs.
-    *   `DaStrategy`: For submitting data to Ethereum.
+Contains the concrete implementations (Adapters).
 
-### 3. Infrastructure (`src/infrastructure/`)
-Concrete implementations (Adapters) of the Application Ports.
-*   **Storage**:
-    *   `PostgresStorage`: Production database adapter.
-    *   `SqliteStorage`: Development/Testing database adapter.
-*   **ProofProvider**:
-    *   `HttpProofProvider`: Talks to an external Prover Service (includes Circuit Breaker).
-    *   `MockProofProvider`: Returns dummy proofs for testing.
-*   **DaStrategy**:
-    *   `CalldataStrategy`: Submits batch data as transaction calldata (Standard Rollup).
-    *   `BlobStrategy`: Submits batch data using EIP-4844 Blobs.
+### DA Strategies
+*   **CalldataStrategy**: Encodes batch data into the `batchData` calldata field.
+*   **BlobStrategy**: Creates an EIP-4844 transaction. Encodes the `VersionedHash` in `daMeta`, attaches the blob as a sidecar, and **archives the blob** to an external service via HTTP.
 
-## Batch Lifecycle (State Machine)
+### Prover Adapters
+*   **HttpProofProvider**: Sends JSON payload to a real ZK Prover service. Implements a **Circuit Breaker** (using the `failsafe` or internal logic) to back off if the prover is overloaded.
+*   **MockProofProvider**: Used for simulation. Accepts a configuration `mock_proving_time_ms` to sleep, simulating computation latency.
 
-1.  **Discovered**: Batch is created/ingested.
-2.  **Proving**: Orchestrator requests a proof from the `ProofProvider`.
-3.  **Proved**: Proof is received and stored.
-4.  **Submitting**: Orchestrator constructs the transaction using the `DaStrategy`.
-5.  **Submitted**: Transaction broadcasted to Ethereum (Tx Hash stored).
-6.  **Confirmed**: Transaction successfully mined with sufficient confirmations.
-7.  **Failed**: Permanent failure (e.g., max retries exceeded, invalid data).
+## 4. Simulation Layer
 
-## Reliability Features
+To support the FYP research objectives without building a full-scale Sequencer, the architecture includes simulation components:
 
-*   **Circuit Breaker**: The `HttpProofProvider` stops sending requests if the Prover Service fails repeatedly, allowing it to recover.
-*   **Exponential Backoff**: Used for retrying transient network errors.
-*   **Idempotency**: Batch IDs are deterministic (UUID v5) to prevent duplicate processing.
-*   **Observability**: Structured logging (Tracing) and Prometheus metrics.
+*   **Mock Executor**: A Python script that injects batches into the database, respecting `BATCH_SIZE` and `BATCH_TIMEOUT` to simulate throughput.
+*   **Metrics**: The system emits Prometheus metrics specifically tailored to measure the latency introduced by each stage, allowing for "Pareto Frontier" analysis (RQ2).

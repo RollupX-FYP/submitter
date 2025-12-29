@@ -39,7 +39,9 @@ pub async fn build(config_path: PathBuf) -> Result<(AppStorage, AppOrchestrator)
 
     let storage: Arc<dyn Storage> = if let Ok(pg_url) = std::env::var("DATABASE_URL") {
         if pg_url.starts_with("postgres") {
-            Arc::new(PostgresStorage::new(&pg_url).await?)
+            let batch_size = cfg.sequencer.as_ref().and_then(|s| s.batch_size);
+            let ordering_policy = cfg.sequencer.as_ref().and_then(|s| s.ordering_policy.clone());
+            Arc::new(PostgresStorage::new(&pg_url, batch_size, ordering_policy).await?)
         } else {
             Arc::new(SqliteStorage::new(&pg_url).await?)
         }
@@ -57,11 +59,19 @@ pub async fn build(config_path: PathBuf) -> Result<(AppStorage, AppOrchestrator)
         Arc::new(HttpProofProvider::new(prover_cfg.url.clone(), threshold))
     } else {
         info!("Using Mock Prover");
-        Arc::new(MockProofProvider)
+        let delay = cfg
+            .simulation
+            .as_ref()
+            .and_then(|s| s.mock_proving_time_ms)
+            .unwrap_or(0);
+        Arc::new(MockProofProvider::new(delay))
     };
 
     let da_strategy: Arc<dyn DaStrategy> = match cfg.da.mode {
-        DaMode::Calldata => Arc::new(CalldataStrategy::new(bridge)),
+        DaMode::Calldata => {
+            let compression = cfg.aggregator.as_ref().and_then(|a| a.compression);
+            Arc::new(CalldataStrategy::new(bridge, compression))
+        },
         DaMode::Blob => {
             let vh = cfg
                 .batch
@@ -73,7 +83,7 @@ pub async fn build(config_path: PathBuf) -> Result<(AppStorage, AppOrchestrator)
             let use_opcode = cfg.da.blob_binding == config::BlobBinding::Opcode;
 
             Arc::new(BlobStrategy::new(
-                bridge, expected, blob_index, use_opcode,
+                bridge, expected, blob_index, use_opcode, cfg.da.archiver_url.clone(),
             ))
         }
     };
@@ -191,6 +201,7 @@ batch:
 da:
   mode: blob
   blob_binding: opcode
+  archiver_url: http://archive
         "
         )
         .unwrap();
@@ -204,6 +215,10 @@ da:
         std::fs::write("data_blob.txt", "dummy").unwrap();
 
         let res = build(config_file.path().to_path_buf()).await;
+        // Debugging failure: print error if any
+        if let Err(e) = &res {
+            println!("Build failed: {}", e);
+        }
         assert!(res.is_ok());
 
         let _ = std::fs::remove_file("data_blob.txt");

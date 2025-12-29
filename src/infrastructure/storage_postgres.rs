@@ -10,10 +10,16 @@ use uuid::Uuid;
 
 pub struct PostgresStorage {
     pool: Pool<Postgres>,
+    batch_size: Option<u32>,
+    ordering_policy: Option<String>,
 }
 
 impl PostgresStorage {
-    pub async fn new(db_url: &str) -> Result<Self, DomainError> {
+    pub async fn new(
+        db_url: &str,
+        batch_size: Option<u32>,
+        ordering_policy: Option<String>,
+    ) -> Result<Self, DomainError> {
         let pool = PgPoolOptions::new()
             .max_connections(5)
             .connect(db_url)
@@ -22,7 +28,11 @@ impl PostgresStorage {
 
         info!("Connected to Postgres");
 
-        let storage = Self { pool };
+        let storage = Self {
+            pool,
+            batch_size,
+            ordering_policy,
+        };
         storage.migrate().await?;
 
         Ok(storage)
@@ -41,7 +51,10 @@ impl PostgresStorage {
                 tx_hash TEXT,
                 attempts INTEGER DEFAULT 0,
                 created_at TIMESTAMPTZ NOT NULL,
-                updated_at TIMESTAMPTZ NOT NULL
+                updated_at TIMESTAMPTZ NOT NULL,
+                blob_versioned_hash TEXT,
+                blob_index INTEGER,
+                fee BIGINT DEFAULT 0
             );
             "#,
         )
@@ -55,6 +68,18 @@ impl PostgresStorage {
                 .execute(&self.pool)
                 .await;
 
+        let _ = sqlx::query("ALTER TABLE batches ADD COLUMN IF NOT EXISTS blob_versioned_hash TEXT")
+            .execute(&self.pool)
+            .await;
+
+        let _ = sqlx::query("ALTER TABLE batches ADD COLUMN IF NOT EXISTS blob_index INTEGER")
+            .execute(&self.pool)
+            .await;
+
+        let _ = sqlx::query("ALTER TABLE batches ADD COLUMN IF NOT EXISTS fee BIGINT DEFAULT 0")
+            .execute(&self.pool)
+            .await;
+
         Ok(())
     }
 }
@@ -67,14 +92,17 @@ impl Storage for PostgresStorage {
 
         sqlx::query(
             r#"
-            INSERT INTO batches (id, data_file, new_root, status, da_mode, proof, tx_hash, attempts, created_at, updated_at)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+            INSERT INTO batches (id, data_file, new_root, status, da_mode, proof, tx_hash, attempts, created_at, updated_at, blob_versioned_hash, blob_index, fee)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
             ON CONFLICT(id) DO UPDATE SET
                 status = excluded.status,
                 proof = excluded.proof,
                 tx_hash = excluded.tx_hash,
                 attempts = excluded.attempts,
-                updated_at = excluded.updated_at
+                updated_at = excluded.updated_at,
+                blob_versioned_hash = excluded.blob_versioned_hash,
+                blob_index = excluded.blob_index,
+                fee = excluded.fee
             "#,
         )
         .bind(id_str)
@@ -87,6 +115,9 @@ impl Storage for PostgresStorage {
         .bind(batch.attempts as i32)
         .bind(batch.created_at)
         .bind(batch.updated_at)
+        .bind(&batch.blob_versioned_hash)
+        .bind(batch.blob_index.map(|i| i as i32))
+        .bind(batch.fee as i64)
         .execute(&self.pool)
         .await
         .map_err(|e| DomainError::Storage(e.to_string()))?;
@@ -142,8 +173,9 @@ impl Storage for PostgresStorage {
                 updated_at: row
                     .try_get("updated_at")
                     .map_err(|e| DomainError::Storage(e.to_string()))?,
-                blob_versioned_hash: None, // TODO: Add DB columns
-                blob_index: None,
+                blob_versioned_hash: row.try_get("blob_versioned_hash").ok(),
+                blob_index: row.try_get::<i32, _>("blob_index").ok().map(|i| i as u8),
+                fee: row.try_get::<i64, _>("fee").unwrap_or(0) as u64,
             }))
         } else {
             Ok(None)
@@ -151,11 +183,22 @@ impl Storage for PostgresStorage {
     }
 
     async fn get_pending_batches(&self) -> Result<Vec<Batch>, DomainError> {
-        let rows =
-            sqlx::query("SELECT * FROM batches WHERE status != 'Confirmed' AND status != 'Failed'")
-                .fetch_all(&self.pool)
-                .await
-                .map_err(|e| DomainError::Storage(e.to_string()))?;
+        let limit = self.batch_size.unwrap_or(100) as i32;
+        let ordering = match self.ordering_policy.as_deref() {
+            Some("priority") => "ORDER BY fee DESC, created_at ASC",
+            _ => "ORDER BY created_at ASC",
+        };
+
+        let query = format!(
+            "SELECT * FROM batches WHERE status != 'Confirmed' AND status != 'Failed' {} LIMIT $1",
+            ordering
+        );
+
+        let rows = sqlx::query(&query)
+            .bind(limit)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(|e| DomainError::Storage(e.to_string()))?;
 
         let mut batches = Vec::new();
         for row in rows {
@@ -222,8 +265,9 @@ impl Storage for PostgresStorage {
                 attempts: row.try_get::<i32, _>("attempts").unwrap_or(0) as u32,
                 created_at,
                 updated_at,
-                blob_versioned_hash: None,
-                blob_index: None,
+                blob_versioned_hash: row.try_get("blob_versioned_hash").ok(),
+                blob_index: row.try_get::<i32, _>("blob_index").ok().map(|i| i as u8),
+                fee: row.try_get::<i64, _>("fee").unwrap_or(0) as u64,
             });
         }
 
@@ -250,7 +294,7 @@ mod tests {
             return;
         }
 
-        let storage = match PostgresStorage::new(&db_url).await {
+        let storage = match PostgresStorage::new(&db_url, Some(10), Some("fifo".into())).await {
             Ok(s) => s,
             Err(_) => {
                 println!("Skipping postgres test: connection failed");
@@ -272,6 +316,7 @@ mod tests {
             updated_at: Utc::now(),
             blob_versioned_hash: None,
             blob_index: None,
+            fee: 100,
         };
 
         // Save

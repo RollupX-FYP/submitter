@@ -1,22 +1,46 @@
 network:
-  rpc_url: "http://127.0.0.1:8545"
+  rpc_url: "http://l1-node:8545" # Docker service name
   chain_id: 31337
 
 contracts:
-  bridge: "0xPUT_BRIDGE_ADDRESS_HERE"
+  # This will be overridden by ENV variable or loaded dynamically in a real app.
+  # For now, we put a placeholder or rely on the Submitter to read from a shared file if updated.
+  bridge: "0xDc64a140Aa3E981100a9becA4E685f962f0cF6C9" # Deterministic address for Hardhat local
 
 da:
-  mode: "calldata" # "calldata" | "blob"
-  blob_binding: "mock" # "mock" | "opcode"
+  mode: "blob" # 'calldata' or 'blob' (RQ3: cost/throughput trade-offs)
+  blob_binding: "mock" # 'mock' or 'opcode'
   blob_index: 0
+  # Required for EIP-4844 to prevent data loss (blobs are pruned after ~18 days)
+  archiver_url: "http://archiver-service:3000"
 
 batch:
-  data_file: "../data-tools/sample-batch.txt"
-  new_root: "0x1111111111111111111111111111111111111111111111111111111111111111"
-
-  # Only used when da.mode="blob"
-  blob_versioned_hash: "0x2222222222222222222222222222222222222222222222222222222222222222"
+  # Not used in loop mode (orchestrator reads from DB), but required for config parsing
+  data_file: "dummy"
+  new_root: "0x00"
+  blob_versioned_hash: "0x00"
 
 resilience:
   max_retries: 5
   circuit_breaker_threshold: 5
+
+fees:
+  policy: "standard" # 'standard', 'aggressive', 'fixed' (RQ2: latency optimization)
+  max_blob_fee_gwei: 50
+
+flow:
+  enable_forced_inclusion: false # RQ2: Test censorship resistance
+
+# --- Simulation & Future Components (RQ2/RQ3) ---
+
+sequencer:
+  batch_size: 50             # RQ2: Throughput vs Latency trade-offs
+  batch_timeout_ms: 5000     # Force close batch after X ms
+  ordering_policy: "fifo"    # 'fifo' or 'fee_priority'
+
+aggregator:
+  compression: "state_diff"  # RQ3: 'full_tx_data' vs 'state_diff' cost analysis
+
+simulation:
+  mock_proving_time_ms: 200  # Simulate ZK proof generation lag
+  gas_price_fluctuation: 1.0 # Multiplier for L1 fee volatility
