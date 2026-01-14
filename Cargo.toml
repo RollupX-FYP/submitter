@@ -25,7 +25,7 @@ flate2 = "1.0"
 sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite", "postgres", "macros", "uuid", "chrono"] }
 reqwest = { version = "0.12", features = ["json"] }
 axum = "0.8"
-metrics = "0.22"
+metrics = "0.24"
 metrics-exporter-prometheus = "0.18"
 uuid = { version = "1.7", features = ["v4", "v5", "serde"] }
 thiserror = "2.0"
