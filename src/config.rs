@@ -52,7 +52,7 @@ pub struct Contracts {
     pub bridge: String,
 }
 
-#[derive(Debug, Deserialize, PartialEq)]
+#[derive(Debug, Deserialize, PartialEq, Clone)]
 pub struct DaConfig {
     pub mode: DaMode,
     pub blob_binding: BlobBinding,
@@ -127,7 +127,7 @@ pub struct AggregatorConfig {
     pub compression: Option<CompressionMode>,
 }
 
-#[derive(Debug, Deserialize, PartialEq)]
+#[derive(Debug, Deserialize, PartialEq, Copy, Clone)]
 #[serde(rename_all = "snake_case")]
 pub enum CompressionMode {
     FullTxData,

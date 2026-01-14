@@ -168,6 +168,7 @@ mod tests {
              updated_at: chrono::Utc::now(),
              blob_versioned_hash: None,
              blob_index: None,
+             fee: 0,
         };
 
         std::fs::write("test_data_calldata.txt", "dummy data").unwrap();

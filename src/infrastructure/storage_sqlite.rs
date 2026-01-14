@@ -148,6 +148,7 @@ impl Storage for SqliteStorage {
                 updated_at,
                 blob_versioned_hash: None, // TODO: Add DB columns
                 blob_index: None,
+                fee: 0,
             }))
         } else {
             Ok(None)
@@ -230,6 +231,7 @@ impl Storage for SqliteStorage {
                 updated_at,
                 blob_versioned_hash: None,
                 blob_index: None,
+                fee: 0,
             });
         }
 
@@ -260,6 +262,7 @@ mod tests {
             updated_at: Utc::now(),
             blob_versioned_hash: None,
             blob_index: None,
+            fee: 0,
         };
 
         // Save

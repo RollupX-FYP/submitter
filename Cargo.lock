@@ -4374,6 +4374,7 @@ dependencies = [
  "clap",
  "dotenvy",
  "ethers",
+ "flate2",
  "metrics 0.22.4",
  "metrics-exporter-prometheus",
  "mockall",
