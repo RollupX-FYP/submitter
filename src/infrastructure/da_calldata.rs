@@ -3,7 +3,7 @@ use crate::contracts::{parse_groth16_proof, ZKRollupBridge};
 use crate::domain::{batch::Batch, errors::DomainError};
 use async_trait::async_trait;
 use ethers::prelude::*;
-use ethers::utils::{hex, keccak256};
+use ethers::utils::keccak256;
 use metrics::counter;
 use std::{fs, sync::Arc};
 use tracing::{info, warn};
@@ -136,6 +136,7 @@ impl<M: Middleware + 'static> DaStrategy for CalldataStrategy<M> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ethers::utils::hex;
     use ethers::providers::{Provider, JsonRpcClient};
     use ethers::signers::{LocalWallet, Signer};
     use ethers::middleware::SignerMiddleware;
@@ -168,7 +169,6 @@ mod tests {
              updated_at: chrono::Utc::now(),
              blob_versioned_hash: None,
              blob_index: None,
-             fee: 0,
         };
 
         std::fs::write("test_data_calldata.txt", "dummy data").unwrap();

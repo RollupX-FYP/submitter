@@ -52,7 +52,7 @@ pub struct Contracts {
     pub bridge: String,
 }
 
-#[derive(Debug, Deserialize, PartialEq, Clone)]
+#[derive(Debug, Deserialize, PartialEq)]
 pub struct DaConfig {
     pub mode: DaMode,
     pub blob_binding: BlobBinding,

@@ -41,7 +41,8 @@ impl SqliteStorage {
                 tx_hash TEXT,
                 attempts INTEGER DEFAULT 0,
                 created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL
+                updated_at TEXT NOT NULL,
+                fee INTEGER DEFAULT 0
             );
             "#,
         )
@@ -49,7 +50,12 @@ impl SqliteStorage {
         .await
         .map_err(|e| DomainError::Storage(format!("Migration failed: {}", e)))?;
 
+        // Ensure columns exist if table already exists
         let _ = sqlx::query("ALTER TABLE batches ADD COLUMN attempts INTEGER DEFAULT 0")
+            .execute(&self.pool)
+            .await;
+
+        let _ = sqlx::query("ALTER TABLE batches ADD COLUMN fee INTEGER DEFAULT 0")
             .execute(&self.pool)
             .await;
 
@@ -62,17 +68,22 @@ impl Storage for SqliteStorage {
     async fn save_batch(&self, batch: &Batch) -> Result<(), DomainError> {
         let id_str = batch.id.to_string();
         let status_str = batch.status.to_string();
+        // Assuming fee is u64 or similar, casting to i64 for SQLite. 
+        // Note: u64::MAX fits in SQLite INTEGER (signed 64-bit) only if < 2^63. 
+        // If fee is large, might need TEXT, but let's assume it fits or is i64.
+        let fee_val = batch.fee as i64; 
 
         sqlx::query(
             r#"
-            INSERT INTO batches (id, data_file, new_root, status, da_mode, proof, tx_hash, attempts, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO batches (id, data_file, new_root, status, da_mode, proof, tx_hash, attempts, created_at, updated_at, fee)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET
                 status = excluded.status,
                 proof = excluded.proof,
                 tx_hash = excluded.tx_hash,
                 attempts = excluded.attempts,
-                updated_at = excluded.updated_at
+                updated_at = excluded.updated_at,
+                fee = excluded.fee
             "#,
         )
         .bind(id_str)
@@ -85,6 +96,7 @@ impl Storage for SqliteStorage {
         .bind(batch.attempts)
         .bind(batch.created_at.to_rfc3339())
         .bind(batch.updated_at.to_rfc3339())
+        .bind(fee_val)
         .execute(&self.pool)
         .await
         .map_err(|e| DomainError::Storage(e.to_string()))?;
@@ -134,6 +146,8 @@ impl Storage for SqliteStorage {
             let updated_at = chrono::DateTime::parse_from_rfc3339(&updated_at_str)
                 .map_err(|e| DomainError::Storage(format!("Invalid updated_at: {}", e)))?
                 .with_timezone(&chrono::Utc);
+            
+            let fee: i64 = row.try_get("fee").unwrap_or(0);
 
             Ok(Some(Batch {
                 id: BatchId(uuid),
@@ -146,9 +160,9 @@ impl Storage for SqliteStorage {
                 attempts: row.try_get("attempts").unwrap_or(0),
                 created_at,
                 updated_at,
+                fee: fee as u64,
                 blob_versioned_hash: None, // TODO: Add DB columns
                 blob_index: None,
-                fee: 0,
             }))
         } else {
             Ok(None)
@@ -217,6 +231,8 @@ impl Storage for SqliteStorage {
                     continue;
                 }
             };
+            
+            let fee: i64 = row.try_get("fee").unwrap_or(0);
 
             batches.push(Batch {
                 id: BatchId(uuid),
@@ -229,9 +245,9 @@ impl Storage for SqliteStorage {
                 attempts: row.try_get("attempts").unwrap_or(0),
                 created_at,
                 updated_at,
+                fee: fee as u64,
                 blob_versioned_hash: None,
                 blob_index: None,
-                fee: 0,
             });
         }
 
@@ -260,9 +276,9 @@ mod tests {
             attempts: 0,
             created_at: Utc::now(),
             updated_at: Utc::now(),
+            fee: 100,
             blob_versioned_hash: None,
             blob_index: None,
-            fee: 0,
         };
 
         // Save
@@ -272,6 +288,7 @@ mod tests {
         let retrieved = storage.get_batch(batch_id).await.expect("get failed").unwrap();
         assert_eq!(retrieved.id, batch.id);
         assert_eq!(retrieved.status, BatchStatus::Discovered);
+        assert_eq!(retrieved.fee, 100);
 
         // Update
         let mut updated_batch = batch.clone();
