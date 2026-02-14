@@ -31,6 +31,31 @@ pub struct Config {
     // Optional simulation config (for local testing/mocking)
     #[allow(dead_code)]
     pub simulation: Option<SimulationConfig>,
+    // Optional proof config
+    pub proof: Option<ProofConfig>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ProofConfig {
+    pub backend: Option<ProofBackend>,
+    pub verification_mode: Option<VerificationMode>,
+    pub verifier_id: Option<u8>,
+}
+
+#[derive(Debug, Deserialize, PartialEq, Clone, Copy)]
+#[serde(rename_all = "lowercase")]
+pub enum ProofBackend {
+    Groth16,
+    Plonky2,
+    Halo2,
+    Mock,
+}
+
+#[derive(Debug, Deserialize, PartialEq, Clone, Copy)]
+#[serde(rename_all = "lowercase")]
+pub enum VerificationMode {
+    OnChain,
+    OffChainOnly,
 }
 
 #[derive(Debug, Deserialize)]
@@ -65,6 +90,7 @@ pub struct DaConfig {
 pub enum DaMode {
     Calldata,
     Blob,
+    OffChain,
 }
 
 #[derive(Debug, Deserialize, PartialEq, Clone, Copy)]

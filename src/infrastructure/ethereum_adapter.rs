@@ -1,4 +1,4 @@
-use crate::contracts::{Groth16Proof, ZKRollupBridge};
+use crate::contracts::ZKRollupBridge;
 use crate::domain::errors::DomainError;
 use async_trait::async_trait;
 use ethers::prelude::*;
@@ -11,10 +11,11 @@ pub trait BridgeClient: BridgeReader + Send + Sync {
     async fn commit_batch(
         &self,
         da_id: u8,
+        verifier_id: u8,
         batch_data: Bytes,
         da_meta: Bytes,
         new_root: [u8; 32],
-        proof: Groth16Proof,
+        proof: Bytes, // Changed to Bytes
     ) -> Result<H256, DomainError>;
 
     async fn get_transaction_receipt(
@@ -43,7 +44,7 @@ impl<M: Middleware + 'static> BridgeReader for RealBridgeClient<M> {
     async fn state_root(&self) -> Result<H256, DomainError> {
         let root = self
             .bridge
-            .state_root()
+            .latest_state_root() // Updated getter name
             .call()
             .await
             .map_err(|e| DomainError::Da(format!("Failed to fetch state root: {}", e)))?;
@@ -57,14 +58,15 @@ impl<M: Middleware + 'static> BridgeClient for RealBridgeClient<M> {
     async fn commit_batch(
         &self,
         da_id: u8,
+        verifier_id: u8,
         batch_data: Bytes,
         da_meta: Bytes,
         new_root: [u8; 32],
-        proof: Groth16Proof,
+        proof: Bytes,
     ) -> Result<H256, DomainError> {
         let call = self
             .bridge
-            .commit_batch(da_id, batch_data, da_meta, new_root, proof);
+            .commit_batch(da_id, verifier_id, batch_data, da_meta, new_root, proof);
         let pending = call
             .send()
             .await

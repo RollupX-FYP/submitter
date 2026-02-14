@@ -128,7 +128,10 @@ async fn test_batch_lifecycle() {
         .expect("Failed to process");
 
     let updated = storage.get_batch(batch.id).await.unwrap().unwrap();
-    println!("After Iter 1: Status={:?}, Attempts={}", updated.status, updated.attempts);
+    println!(
+        "After Iter 1: Status={:?}, Attempts={}",
+        updated.status, updated.attempts
+    );
     assert_eq!(updated.status, BatchStatus::Proving);
 
     // 5. Run iteration (Proving -> Proved)
@@ -137,11 +140,17 @@ async fn test_batch_lifecycle() {
         .await
         .expect("Failed to process");
     let updated = storage.get_batch(batch.id).await.unwrap().unwrap();
-    println!("After Iter 2: Status={:?}, Attempts={}", updated.status, updated.attempts);
+    println!(
+        "After Iter 2: Status={:?}, Attempts={}",
+        updated.status, updated.attempts
+    );
 
     // If it failed, print why (indirectly via attempts)
     if updated.status != BatchStatus::Proved {
-        println!("Test Failed at Step 5. Batch still in {:?}. Attempts incremented to {}.", updated.status, updated.attempts);
+        println!(
+            "Test Failed at Step 5. Batch still in {:?}. Attempts incremented to {}.",
+            updated.status, updated.attempts
+        );
     }
 
     assert_eq!(updated.status, BatchStatus::Proved);

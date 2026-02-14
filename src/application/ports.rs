@@ -6,6 +6,15 @@ use async_trait::async_trait;
 use ethers::types::H256;
 use serde::{Deserialize, Serialize};
 
+#[derive(Debug, Serialize, Deserialize)]
+pub struct SubmissionResult {
+    pub tx_hash: String,
+    pub block_number: u64,
+    pub latency_ms: u64,
+    pub compression_ratio: Option<f64>,
+    pub gas_saved: Option<u64>,
+}
+
 #[cfg_attr(test, mockall::automock)]
 #[async_trait]
 pub trait BridgeReader: Send + Sync {
@@ -49,8 +58,8 @@ pub trait DaStrategy: Send + Sync {
     /// Blob: abi.encode(versioned_hash, blob_index)
     fn encode_da_meta(&self, batch: &Batch) -> Result<Vec<u8>, DomainError>;
 
-    /// Broadcasts the transaction and returns the hash immediately.
-    async fn submit(&self, batch: &Batch, proof: &str) -> Result<String, DomainError>;
+    /// Broadcasts the transaction and returns the result.
+    async fn submit(&self, batch: &Batch, proof: &str, verifier_id: u8) -> Result<SubmissionResult, DomainError>;
 
     /// Checks if a transaction has been confirmed.
     async fn check_confirmation(&self, tx_hash: &str) -> Result<bool, DomainError>;

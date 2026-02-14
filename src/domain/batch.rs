@@ -73,6 +73,7 @@ pub struct Batch {
     pub blob_versioned_hash: Option<String>,
     pub blob_index: Option<u8>,
     pub fee: u64,
+    pub experiment_id: Option<String>,
 }
 
 impl Batch {
@@ -99,6 +100,7 @@ impl Batch {
             blob_versioned_hash: None,
             blob_index: None,
             fee: 0,
+            experiment_id: None,
         }
     }
 

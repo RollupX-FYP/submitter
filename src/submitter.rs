@@ -1,4 +1,4 @@
-use crate::contracts::{Groth16Proof, ZKRollupBridge};
+use crate::contracts::ZKRollupBridge;
 use anyhow::{Context, Result};
 use ethers::prelude::*;
 
@@ -15,17 +15,12 @@ impl<M: Middleware + 'static> Submitter<M> {
         &self,
         batch_data: Vec<u8>,
         new_root: [u8; 32],
-        proof: Groth16Proof,
+        proof: Bytes,
     ) -> Result<H256> {
         // Calldata strategy: daId = 0, daMeta = empty
         let bridge = self.bridge.clone();
-        let call = bridge.commit_batch(
-            0,
-            batch_data.into(),
-            Bytes::new(),
-            new_root,
-            proof,
-        );
+        // verifier_id = 0 (Groth16 default for legacy)
+        let call = bridge.commit_batch(0, 0, batch_data.into(), Bytes::new(), new_root, proof);
         let pending = call.send().await?;
 
         let receipt = pending.await?.context("tx dropped")?;
@@ -38,12 +33,10 @@ impl<M: Middleware + 'static> Submitter<M> {
         blob_index: u8,
         _use_opcode: bool, // Deprecated
         new_root: [u8; 32],
-        proof: Groth16Proof,
+        proof: Bytes,
     ) -> Result<H256> {
         // Blob strategy: daId = 1, daMeta = abi.encode(versionedHash, blobIndex)
-        // Note: Submitter struct is for manual submission or older paths. 
-        // We need to encode metadata here manually as we don't have the Batch/Strategy abstraction here.
-        
+
         let versioned_hash = H256::from(expected_versioned_hash);
         let da_meta = ethers::abi::encode(&[
             ethers::abi::Token::FixedBytes(versioned_hash.as_bytes().to_vec()),
@@ -51,8 +44,10 @@ impl<M: Middleware + 'static> Submitter<M> {
         ]);
 
         let bridge = self.bridge.clone();
+        // verifier_id = 0 (Groth16 default for legacy)
         let call = bridge.commit_batch(
             1,
+            0,
             Bytes::new(), // batchData empty for blob
             da_meta.into(),
             new_root,
@@ -68,14 +63,14 @@ impl<M: Middleware + 'static> Submitter<M> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ethers::providers::{Provider, JsonRpcClient};
-    use ethers::signers::{LocalWallet, Signer};
     use ethers::middleware::SignerMiddleware;
-    use ethers::types::{Block, U64, TransactionReceipt, FeeHistory};
+    use ethers::providers::JsonRpcClient;
+    use ethers::signers::{LocalWallet, Signer};
+    use ethers::types::{Block, FeeHistory, TransactionReceipt, U64};
     use serde::de::DeserializeOwned;
     use serde::Serialize;
-    use std::sync::{Arc, Mutex};
     use std::fmt::Debug;
+    use std::sync::{Arc, Mutex};
 
     #[derive(Clone, Debug)]
     struct MockClient {
@@ -84,10 +79,15 @@ mod tests {
 
     impl MockClient {
         fn new() -> Self {
-            Self { responses: Arc::new(Mutex::new(Vec::new())) }
+            Self {
+                responses: Arc::new(Mutex::new(Vec::new())),
+            }
         }
         fn push<T: Serialize>(&self, res: T) {
-            self.responses.lock().unwrap().push(serde_json::to_value(res).unwrap());
+            self.responses
+                .lock()
+                .unwrap()
+                .push(serde_json::to_value(res).unwrap());
         }
     }
 
@@ -103,7 +103,10 @@ mod tests {
             println!("Request: {} {:?}", method, params);
             let mut responses = self.responses.lock().unwrap();
             if responses.is_empty() {
-                return Err(ethers::providers::ProviderError::CustomError(format!("No responses for {}", method)));
+                return Err(ethers::providers::ProviderError::CustomError(format!(
+                    "No responses for {}",
+                    method
+                )));
             }
             let res = responses.remove(0);
             serde_json::from_value(res).map_err(|e| ethers::providers::ProviderError::SerdeJson(e))
@@ -115,29 +118,32 @@ mod tests {
     async fn test_submitter_calldata() {
         let mock = MockClient::new();
         let provider = Provider::new(mock.clone());
-        let wallet: LocalWallet = "0x0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20".parse().unwrap();
+        let wallet: LocalWallet =
+            "0x0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20"
+                .parse()
+                .unwrap();
         let client = Arc::new(SignerMiddleware::new(provider, wallet.with_chain_id(1u64)));
         let bridge_addr = Address::random();
         let bridge = ZKRollupBridge::new(bridge_addr, client.clone());
         let submitter = Submitter::new(bridge);
-        
+
         mock.push(U256::from(0));
         let mut block = Block::<H256>::default();
         block.base_fee_per_gas = Some(U256::from(100));
         mock.push(block);
-        
+
         let history = FeeHistory {
             oldest_block: U256::zero(),
-            base_fee_per_gas: vec![U256::from(100); 11], 
+            base_fee_per_gas: vec![U256::from(100); 11],
             gas_used_ratio: vec![0.5; 10],
             reward: vec![],
         };
         mock.push(history);
-        
+
         mock.push(U256::from(100_000));
         let tx_hash = H256::random();
         mock.push(tx_hash);
-        
+
         mock.push(TransactionReceipt {
             status: Some(U64::from(1)),
             block_number: Some(U64::from(100)),
@@ -146,62 +152,12 @@ mod tests {
         });
         mock.push(U64::from(101));
 
-        let proof = Groth16Proof {
-            a: [U256::zero(), U256::zero()],
-            b: [[U256::zero(), U256::zero()], [U256::zero(), U256::zero()]],
-            c: [U256::zero(), U256::zero()],
-        };
+        let proof = Bytes::from([0u8; 128].to_vec());
 
-        let res = submitter.submit_calldata(vec![0u8; 32], [0u8; 32], proof).await;
-        
-        assert!(res.is_ok());
-        assert_eq!(res.unwrap(), tx_hash);
-    }
-    
-    #[tokio::test]
-    #[ignore]
-    async fn test_submitter_blob() {
-        let mock = MockClient::new();
-        let provider = Provider::new(mock.clone());
-        let wallet: LocalWallet = "0x0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20".parse().unwrap();
-        let client = Arc::new(SignerMiddleware::new(provider, wallet.with_chain_id(1u64)));
-        let bridge_addr = Address::random();
-        let bridge = ZKRollupBridge::new(bridge_addr, client.clone());
-        let submitter = Submitter::new(bridge);
-        
-        mock.push(U256::from(0));
-        let mut block = Block::<H256>::default();
-        block.base_fee_per_gas = Some(U256::from(100));
-        mock.push(block);
-        
-        let history = FeeHistory {
-            oldest_block: U256::zero(),
-            base_fee_per_gas: vec![U256::from(100); 11], 
-            gas_used_ratio: vec![0.5; 10],
-            reward: vec![],
-        };
-        mock.push(history);
-        
-        mock.push(U256::from(100_000));
-        let tx_hash = H256::random();
-        mock.push(tx_hash);
-        
-        mock.push(TransactionReceipt {
-            status: Some(U64::from(1)),
-            block_number: Some(U64::from(100)),
-            transaction_hash: tx_hash,
-            ..Default::default()
-        });
-        mock.push(U64::from(101));
+        let res = submitter
+            .submit_calldata(vec![0u8; 32], [0u8; 32], proof)
+            .await;
 
-        let proof = Groth16Proof {
-            a: [U256::zero(), U256::zero()],
-            b: [[U256::zero(), U256::zero()], [U256::zero(), U256::zero()]],
-            c: [U256::zero(), U256::zero()],
-        };
-
-        let res = submitter.submit_blob([0u8; 32], 0, false, [0u8; 32], proof).await;
-        
         assert!(res.is_ok());
         assert_eq!(res.unwrap(), tx_hash);
     }

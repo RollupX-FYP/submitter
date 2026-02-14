@@ -22,7 +22,7 @@ ethers = { version = "2", features = ["abigen", "rustls"] }
 # New dependencies
 # c-kzg = "1.0" # Disabled to ensure CI passes without system deps
 flate2 = "1.0"
-sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite", "postgres", "macros", "uuid", "chrono"] }
+# sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite", "postgres", "macros", "uuid", "chrono"] }
 reqwest = { version = "0.12", features = ["json"] }
 axum = "0.8"
 metrics = "0.22"
@@ -34,6 +34,9 @@ chrono = { version = "0.4", features = ["serde"] }
 backoff = { version = "0.4", features = ["tokio"] }
 tokio-util = "0.7"
 sha1_smol = "1.0"
+tonic = "0.12.3"
+prost = "0.13"
+tokio-stream = { version = "0.1", features = ["sync"] }
 
 [dev-dependencies]
 wiremock = "0.6"
@@ -45,3 +48,6 @@ predicates = "3.1.3"
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(tarpaulin_include)'] }
+
+[build-dependencies]
+tonic-build = "0.12.3"

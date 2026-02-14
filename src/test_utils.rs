@@ -11,10 +11,15 @@ pub struct MockClient {
 
 impl MockClient {
     pub fn new() -> Self {
-        Self { responses: Arc::new(Mutex::new(Vec::new())) }
+        Self {
+            responses: Arc::new(Mutex::new(Vec::new())),
+        }
     }
     pub fn push<T: Serialize>(&self, res: T) {
-        self.responses.lock().unwrap().push(serde_json::to_value(res).unwrap());
+        self.responses
+            .lock()
+            .unwrap()
+            .push(serde_json::to_value(res).unwrap());
     }
 }
 
@@ -30,7 +35,10 @@ impl JsonRpcClient for MockClient {
         println!("Request: {} {:?}", method, params);
         let mut responses = self.responses.lock().unwrap();
         if responses.is_empty() {
-            return Err(ProviderError::CustomError(format!("No responses for {}", method)));
+            return Err(ProviderError::CustomError(format!(
+                "No responses for {}",
+                method
+            )));
         }
         let res = responses.remove(0);
         serde_json::from_value(res).map_err(|e| ProviderError::SerdeJson(e))

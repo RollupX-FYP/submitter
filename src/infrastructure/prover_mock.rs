@@ -20,7 +20,10 @@ impl ProofProvider for MockProofProvider {
         batch_id: &BatchId,
         _public_inputs: &[u8],
     ) -> Result<ProofResponse, DomainError> {
-        info!("Mock proving for batch {} (delay: {}ms)", batch_id, self.delay_ms);
+        info!(
+            "Mock proving for batch {} (delay: {}ms)",
+            batch_id, self.delay_ms
+        );
         // Simulate delay
         if self.delay_ms > 0 {
             tokio::time::sleep(tokio::time::Duration::from_millis(self.delay_ms)).await;
@@ -31,8 +34,6 @@ impl ProofProvider for MockProofProvider {
         // Just using zeroes is fine for a mock
         let valid_proof = "00".repeat(256);
 
-        Ok(ProofResponse {
-            proof: valid_proof,
-        })
+        Ok(ProofResponse { proof: valid_proof })
     }
 }

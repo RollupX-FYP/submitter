@@ -16,9 +16,7 @@ pub fn init_tracing() {
             .json()
             .try_init();
     } else {
-        let _ = tracing_subscriber::fmt()
-            .with_env_filter(filter)
-            .try_init();
+        let _ = tracing_subscriber::fmt().with_env_filter(filter).try_init();
     }
 }
 

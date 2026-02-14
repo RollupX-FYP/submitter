@@ -21,11 +21,7 @@ pub async fn run(config_path: PathBuf) -> Result<()> {
     let bridge_addr: Address = cfg.contracts.bridge.parse()?;
     let bridge = ZKRollupBridge::new(bridge_addr, client.clone());
 
-    let proof = contracts::Groth16Proof {
-        a: [U256::zero(), U256::zero()],
-        b: [[U256::zero(), U256::zero()], [U256::zero(), U256::zero()]],
-        c: [U256::zero(), U256::zero()],
-    };
+    let proof = Bytes::from([0u8; 128].to_vec());
 
     let new_root: H256 = cfg.batch.new_root.parse()?;
     let submitter = Submitter::new(bridge);
@@ -66,6 +62,10 @@ pub async fn run(config_path: PathBuf) -> Result<()> {
                 "✅ blob batch submitted ({:?} binding). tx={:?}",
                 cfg.da.blob_binding, tx_hash
             );
+        }
+        DaMode::OffChain => {
+            // Not supported in this legacy script
+            todo!("OffChain mode not supported in legacy script runner. Use daemon.");
         }
     }
 

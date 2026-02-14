@@ -2,7 +2,7 @@ use anyhow::Result;
 use clap::Parser;
 use dotenvy::dotenv;
 use std::path::PathBuf;
-use submitter_rs::script;
+use submitter_rs::daemon;
 
 #[derive(Parser, Debug)]
 struct Args {
@@ -16,5 +16,5 @@ async fn main() -> Result<()> {
     tracing_subscriber::fmt::init();
 
     let args = Args::parse();
-    script::run(args.config).await
+    daemon::run(args.config).await
 }

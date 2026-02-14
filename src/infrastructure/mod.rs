@@ -1,8 +1,9 @@
+pub mod batch_source;
+pub mod compression;
 pub mod da_blob;
 pub mod da_calldata;
+pub mod da_offchain;
 pub mod ethereum_adapter;
 pub mod observability;
 pub mod prover_http;
 pub mod prover_mock;
-pub mod storage_postgres;
-pub mod storage_sqlite;

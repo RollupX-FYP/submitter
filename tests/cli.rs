@@ -16,5 +16,7 @@ fn test_submitter_rs_help() {
 #[test]
 fn test_submitter_missing_config() {
     let mut cmd = Command::cargo_bin("submitter").unwrap();
-    cmd.assert().failure().stderr(predicate::str::contains("Usage:"));
+    cmd.assert()
+        .failure()
+        .stderr(predicate::str::contains("Usage:"));
 }

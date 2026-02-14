@@ -1,22 +1,17 @@
-# Builder stage
-FROM rust:1.83-bookworm as builder
+FROM public.ecr.aws/docker/library/rust:1.79 as builder
+WORKDIR /app
+RUN apt-get update && apt-get install -y protobuf-compiler
 
-WORKDIR /usr/src/app
-COPY . .
+COPY proto proto
+COPY submitter submitter
 
-# Build the application
-RUN cargo install --locked --path .
+WORKDIR /app/submitter
+RUN cargo build --release --bin submitter
 
-# Runtime stage
-FROM debian:bookworm-slim
+FROM public.ecr.aws/docker/library/debian:bookworm-slim
+WORKDIR /app
+RUN apt-get update && apt-get install -y ca-certificates openssl gettext-base && rm -rf /var/lib/apt/lists/*
 
-# Install OpenSSL (required for ethers-rs/reqwest) and ca-certificates
-RUN apt-get update && apt-get install -y libssl3 ca-certificates && rm -rf /var/lib/apt/lists/*
+COPY --from=builder /app/submitter/target/release/submitter /usr/local/bin/submitter
 
-COPY --from=builder /usr/local/cargo/bin/submitter-rs /usr/local/bin/submitter-rs
-
-# Create a non-root user
-RUN useradd -m -u 1000 -U submitter
-USER submitter
-
-ENTRYPOINT ["submitter-rs"]
+CMD ["submitter"]

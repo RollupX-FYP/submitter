@@ -1,10 +1,12 @@
 pub mod application;
 pub mod config;
 pub mod contracts;
+pub mod daemon;
 pub mod domain;
 pub mod infrastructure;
-pub mod startup;
-#[cfg(test)] pub mod test_utils;
+pub mod proto;
 pub mod script;
+pub mod startup;
 pub mod submitter;
-pub mod daemon;
+#[cfg(test)]
+pub mod test_utils;
