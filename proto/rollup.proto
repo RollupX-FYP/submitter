@@ -1,0 +1,49 @@
+syntax = "proto3";
+
+package rollup;
+
+// Empty or simple filter for now
+message StreamRequest {
+  // reserved for future filters, e.g. from_batch_id, etc.
+}
+
+message BatchPayload {
+  string batch_id = 1;
+
+  // Use bytes, not hex-encoded strings, for efficient transport.
+  bytes batch_data = 2;
+
+  bytes pre_state_root = 3;
+  bytes post_state_root = 4;
+
+  bytes da_commitment = 5;
+
+  // Mock proof for now, as opaque bytes blob.
+  bytes proof = 6;
+  
+  // Research experiment ID
+  string experiment_id = 7;
+}
+
+message L2TransferTx {
+  // simple token transfer model
+  bytes from = 1;      // 20-byte address
+  bytes to = 2;        // 20-byte address
+  uint64 amount = 3;   // simplistic amount
+  uint64 nonce = 4;    // per-account nonce
+  bytes signature = 5; // transaction signature
+}
+
+message SubmitTxsRequest {
+  repeated L2TransferTx txs = 1;
+  string experiment_id = 2;
+}
+
+message SubmitTxsResponse {
+  uint64 accepted = 1; // number of txs accepted into the pool
+}
+
+service RollupService {
+  rpc StreamBatches (StreamRequest) returns (stream BatchPayload);
+  rpc SubmitTransactions (SubmitTxsRequest) returns (SubmitTxsResponse);
+}

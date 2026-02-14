@@ -1,0 +1,18 @@
+batch:
+  blob_versioned_hash: '0x0100000000000000000000000000000000000000000000000000000000000000'
+  data_file: dummy.bin
+  new_root: '0x00'
+contracts:
+  bridge: '0x0165878A594ca255338adfa4d48449f69242Eb8F'
+da:
+  archiver_url: http://mock-archiver
+  blob_binding: mock
+  blob_index: 0
+  mode: calldata
+network:
+  chain_id: 31337
+  rpc_url: http://127.0.0.1:8545
+proof:
+  backend: groth16
+  verification_mode: onchain
+  verifier_id: 0
