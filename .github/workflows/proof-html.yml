@@ -13,6 +13,6 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: anishathalye/proof-html@v1.1.0
+      - uses: anishathalye/proof-html@v2.2.2
         with:
           directory: ./
