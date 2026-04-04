@@ -119,12 +119,15 @@ impl<M: Middleware + 'static> DaStrategy for CalldataStrategy<M> {
         let latency = start_time.elapsed().as_millis() as u64;
         counter!("tx_submitted_total", "mode" => "calldata").increment(1);
 
+        let gas_used = receipt.gas_used.map(|g| g.as_u64());
+
         Ok(SubmissionResult {
             tx_hash: format!("{:?}", tx_hash),
             block_number: receipt.block_number.unwrap_or_default().as_u64(),
             latency_ms: latency,
             compression_ratio: None,
             gas_saved: None,
+            gas_used,
         })
     }
 

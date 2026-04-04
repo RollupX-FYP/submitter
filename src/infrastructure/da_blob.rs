@@ -90,6 +90,7 @@ impl<M: Middleware + 'static> DaStrategy for BlobStrategy<M> {
             let client = reqwest::Client::new();
             let res = client
                 .post(url)
+                .header("Content-Type", "application/octet-stream")
                 .body(payload_data.clone())
                 .send()
                 .await
@@ -156,12 +157,15 @@ impl<M: Middleware + 'static> DaStrategy for BlobStrategy<M> {
         let latency = start_time.elapsed().as_millis() as u64;
         counter!("tx_submitted_total", "mode" => "blob").increment(1);
 
+        let gas_used = receipt.gas_used.map(|g| g.as_u64());
+
         Ok(SubmissionResult {
             tx_hash: format!("{:?}", tx_hash),
             block_number: receipt.block_number.unwrap_or_default().as_u64(),
             latency_ms: latency,
             compression_ratio: Some(metrics.compression_ratio),
             gas_saved: Some(metrics.gas_saved),
+            gas_used,
         })
     }
 

@@ -33,6 +33,9 @@ pub struct Config {
     pub simulation: Option<SimulationConfig>,
     // Optional proof config
     pub proof: Option<ProofConfig>,
+    // Optional CSV output path
+    #[serde(default)]
+    pub csv_output_path: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]

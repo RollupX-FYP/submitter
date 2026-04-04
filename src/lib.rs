@@ -1,6 +1,7 @@
 pub mod application;
 pub mod config;
 pub mod contracts;
+pub mod saga;
 pub mod daemon;
 pub mod domain;
 pub mod infrastructure;

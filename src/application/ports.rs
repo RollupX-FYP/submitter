@@ -13,6 +13,7 @@ pub struct SubmissionResult {
     pub latency_ms: u64,
     pub compression_ratio: Option<f64>,
     pub gas_saved: Option<u64>,
+    pub gas_used: Option<u64>,
 }
 
 #[cfg_attr(test, mockall::automock)]

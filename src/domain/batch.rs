@@ -74,6 +74,8 @@ pub struct Batch {
     pub blob_index: Option<u8>,
     pub fee: u64,
     pub experiment_id: Option<String>,
+    #[serde(default)]
+    pub tx_count: u32,
 }
 
 impl Batch {
@@ -101,6 +103,7 @@ impl Batch {
             blob_index: None,
             fee: 0,
             experiment_id: None,
+            tx_count: 0,
         }
     }
 
